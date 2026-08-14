@@ -18,6 +18,7 @@ export async function publishSession(input) {
   const basePath = input.basePath || path.posix.dirname(entryPath);
   const requestedSpace = input.spaceId || null;
   let bearerToken = input.accessToken || input.claimToken || null;
+  let exchangedAccessToken = null;
   const idempotencyKey = `push-session-${randomUUID()}`;
   const idempotencyPrincipal = randomBytes(32).toString("hex");
   const publishPayload = {
@@ -42,8 +43,15 @@ export async function publishSession(input) {
     });
     initial = await responseJson(response);
     if (response.ok) break;
+    if (initial?.code === "space_claimed_credential_available" && input.claimToken && !input.accessToken && !exchangedAccessToken) {
+      exchangedAccessToken = await exchangeClaimCredential({ apiUrl, claimToken: input.claimToken, fetchImpl });
+      bearerToken = exchangedAccessToken;
+      continue;
+    }
     if (initial?.code !== "space_capacity_warming" || attempt === MAX_PUBLISH_ATTEMPTS) {
-      throw apiError(response, initial);
+      const error = apiError(response, initial);
+      error.stage = "initial_publish";
+      throw error;
     }
     await delay(retryAfterMs(response));
   }
@@ -83,6 +91,7 @@ export async function publishSession(input) {
     shareUrl: shareLink.url,
     landingUrl,
     link: shareLink,
+    credential: exchangedAccessToken ? { accessToken: exchangedAccessToken } : null,
     space: {
       id: space.id,
       liveUrl,
@@ -93,6 +102,38 @@ export async function publishSession(input) {
     versionUrl: version?.immutableUrl || null,
     accessUrl: access?.url || claim?.url || null,
   };
+}
+
+async function exchangeClaimCredential({ apiUrl, claimToken, fetchImpl }) {
+  let response;
+  try {
+    response = await fetchImpl(`${apiUrl}/v1/claim/exchange`, {
+      method: "POST",
+      headers: requestHeaders({ bearerToken: claimToken }),
+    });
+  } catch (error) {
+    error.stage = "claim_exchange";
+    throw error;
+  }
+  let body;
+  try {
+    body = await responseJson(response);
+  } catch (error) {
+    error.stage = "claim_exchange";
+    throw error;
+  }
+  if (!response.ok) {
+    const error = apiError(response, body);
+    error.stage = "claim_exchange";
+    throw error;
+  }
+  const accessToken = body?.data?.credential?.accessToken;
+  if (!accessToken) {
+    const error = new Error("Spacefast exchanged the claimed space key without returning a continuation credential.");
+    error.stage = "claim_exchange";
+    throw error;
+  }
+  return accessToken;
 }
 
 async function settlePublish({ initial, files, apiUrl, bearerToken, fetchImpl }) {
@@ -210,7 +251,7 @@ function totalFileBytes(files) {
 }
 
 export function sessionRoute(session) {
-  return `sessions/${safeSegment(session?.agent)}/${safeSegment(session?.id)}/index.html`;
+  return `sessions/${safeSegment(session?.id)}/index.html`;
 }
 
 function normalizeFilePath(value) {

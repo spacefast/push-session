@@ -58,6 +58,7 @@ function normalizeConfig(input) {
     config.space = {
       id: input.space.id,
       ...(stringField(input.space.liveUrl) && { liveUrl: input.space.liveUrl }),
+      ...(stringField(input.space.accessToken) && { accessToken: input.space.accessToken }),
       ...(stringField(input.space.claimToken) && { claimToken: input.space.claimToken }),
       ...(stringField(input.space.claimUrl) && { claimUrl: input.space.claimUrl }),
       ...(stringField(input.space.expiresAt) && { expiresAt: input.space.expiresAt }),

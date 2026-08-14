@@ -6,7 +6,7 @@ const DEFAULT_PAGE_BYTES = 256 * 1024;
 const DEFAULT_PAGE_ITEMS = 100;
 
 export function renderSessionBundle(session, messages, options = {}) {
-  const basePath = options.basePath || createSharePath();
+  const basePath = options.basePath || createSharePath(session.id);
   const maxBytes = options.pageBytes || DEFAULT_PAGE_BYTES;
   const sourceItems = messages.map((message, index) => toT3WireItem(message, index, {
     provider: session.agent,
@@ -72,8 +72,17 @@ export function renderSession(session, messages, options = {}) {
   return renderSessionBundle(session, messages, options).files[0].content;
 }
 
-export function createSharePath() {
-  return `sessions/${randomUUID()}/${randomUUID()}`;
+export function createSharePath(sessionId = randomUUID()) {
+  return `sessions/${safePathSegment(sessionId)}`;
+}
+
+function safePathSegment(value) {
+  const segment = String(value || "session")
+    .normalize("NFKD")
+    .replace(/[^a-zA-Z0-9._-]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, 120);
+  return segment || "session";
 }
 
 export function toT3WireItem(message, index, context = {}) {

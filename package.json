@@ -1,6 +1,6 @@
 {
   "name": "push-session",
-  "version": "0.1.1",
+  "version": "0.2.0",
   "description": "Share local AI coding-agent sessions with one npx command.",
   "type": "module",
   "bin": {

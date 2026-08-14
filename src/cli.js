@@ -16,6 +16,7 @@ export async function run(argv = process.argv.slice(2), dependencies = {}) {
   const parsed = parseArgs(argv);
   if (parsed.options.help) return printHelp();
   if (parsed.options.version) return console.log(packageJson.version);
+  const log = dependencies.log || console.log;
 
   const interactive = Boolean(process.stdin.isTTY && process.stdout.isTTY && !parsed.options.json);
   if (!parsed.agent && !interactive) {
@@ -46,7 +47,7 @@ export async function run(argv = process.argv.slice(2), dependencies = {}) {
       pages: bundle.pageCount,
       route: bundle.entryPath,
     };
-    if (parsed.options.json) console.log(JSON.stringify(result));
+    if (parsed.options.json) log(JSON.stringify(result));
     else {
       prompts.note(`${result.messages} transcript entries\n${result.pages} JSON page${result.pages === 1 ? "" : "s"}\n${result.bytes.toLocaleString()} bytes\n${result.route}`, "Ready to publish");
       prompts.outro("Dry run complete. Nothing was uploaded.");
@@ -55,52 +56,89 @@ export async function run(argv = process.argv.slice(2), dependencies = {}) {
   }
 
   const env = dependencies.env || process.env;
-  const config = loadConfig(env);
+  const warn = dependencies.warn || ((message) => {
+    if (interactive) prompts.log.warn(message);
+    else console.error(`Warning: ${message}`);
+  });
+  let config;
+  try {
+    config = loadConfig(env);
+  } catch (error) {
+    warn(`${error.message} Publishing without saved state.`);
+    config = { version: 1 };
+  }
   const configuredSpace = parsed.options.newSpace ? null : parsed.options.space || config.space?.id || null;
+  const reusingGlobalSpace = Boolean(!parsed.options.newSpace && !parsed.options.space && config.space?.id);
   const configuredClaim = configuredSpace === config.space?.id ? config.space?.claimToken : null;
-  const accessToken = env.SPACEFAST_TOKEN || null;
+  const savedAccessToken = configuredSpace === config.space?.id ? config.space?.accessToken : null;
+  const accessToken = env.SPACEFAST_TOKEN || savedAccessToken || null;
   if (parsed.options.space && !accessToken && !configuredClaim) {
     throw new Error("Publishing to --space requires SPACEFAST_TOKEN unless it is the saved anonymous space.");
   }
 
   const spinner = interactive ? prompts.spinner() : null;
   spinner?.start(configuredSpace ? "Publishing to your session space" : "Creating your session space");
+  const publish = ({ spaceId, accessToken: publishAccessToken, claimToken }) => publishSession({
+    session: selection.session,
+    files: bundle.files,
+    entryPath: bundle.entryPath,
+    basePath: bundle.basePath,
+    apiUrl: parsed.options.apiUrl || config.apiUrl,
+    spaceId,
+    accessToken: publishAccessToken,
+    claimToken,
+    fetchImpl: dependencies.fetchImpl,
+  });
   let result;
   try {
-    result = await publishSession({
-      session: selection.session,
-      files: bundle.files,
-      entryPath: bundle.entryPath,
-      basePath: bundle.basePath,
-      apiUrl: parsed.options.apiUrl || config.apiUrl,
+    result = await publish({
       spaceId: configuredSpace,
       accessToken,
       claimToken: configuredClaim,
-      fetchImpl: dependencies.fetchImpl,
     });
     spinner?.stop("Session published");
   } catch (error) {
-    spinner?.stop("Publish failed");
-    if (error?.status === 401 && configuredClaim) {
-      throw new Error("The saved Spacefast space was claimed or its key expired. Set SPACEFAST_TOKEN and retry, or use --new-space.");
+    if (!reusingGlobalSpace || !canReplaceSavedSpace(error)) {
+      spinner?.stop("Publish failed");
+      throw error;
     }
-    throw error;
+    warn("The saved session space is no longer reusable. Creating a new global session space.");
+    spinner?.message("Creating a new session space");
+    const fallbackAccessToken = env.SPACEFAST_TOKEN && error?.status !== 401 ? env.SPACEFAST_TOKEN : null;
+    try {
+      result = await publish({ spaceId: null, accessToken: fallbackAccessToken, claimToken: null });
+    } catch (fallbackError) {
+      if (!fallbackAccessToken || fallbackError?.stage !== "initial_publish" || fallbackError?.status !== 401) {
+        spinner?.stop("Publish failed");
+        throw fallbackError;
+      }
+      warn("SPACEFAST_TOKEN was rejected. Continuing with an anonymous session space.");
+      result = await publish({ spaceId: null, accessToken: null, claimToken: null });
+    }
+    spinner?.stop("Session published");
   }
 
-  saveConfig(
-    {
-      version: 1,
-      apiUrl: parsed.options.apiUrl || config.apiUrl,
-      space: {
-        id: result.space.id,
-        liveUrl: result.space.liveUrl,
-        claimToken: accessToken ? undefined : result.space.claimToken,
-        claimUrl: result.space.claimUrl,
-        expiresAt: result.space.expiresAt,
+  try {
+    const continuingSavedAccess = result.space.id === config.space?.id ? savedAccessToken : null;
+    const persistedAccessToken = result.credential?.accessToken || continuingSavedAccess || undefined;
+    saveConfig(
+      {
+        version: 1,
+        apiUrl: parsed.options.apiUrl || config.apiUrl,
+        space: {
+          id: result.space.id,
+          liveUrl: result.space.liveUrl,
+          accessToken: persistedAccessToken,
+          claimToken: persistedAccessToken ? undefined : result.space.claimToken,
+          claimUrl: result.space.claimUrl,
+          expiresAt: result.space.expiresAt,
+        },
       },
-    },
-    env,
-  );
+      env,
+    );
+  } catch (error) {
+    warn(`${error.message} This publish succeeded, but global space reuse could not be saved.`);
+  }
 
   const output = {
     agent: selection.adapter.id,
@@ -115,22 +153,32 @@ export async function run(argv = process.argv.slice(2), dependencies = {}) {
     claimExpiresAt: result.space.expiresAt,
   };
   if (parsed.options.json) {
-    console.log(JSON.stringify(output));
+    log(JSON.stringify(output));
   } else {
-    prompts.note(
-      [
-        `${pc.bold("Session")}  ${output.url || "Published"}`,
-        output.versionUrl && `${pc.bold("Version")}  ${output.versionUrl}`,
-        output.claimUrl && `${pc.bold("Claim")}    ${output.claimUrl}`,
-        output.claimExpiresAt && `${pc.bold("Expires")}  ${formatDate(output.claimExpiresAt)}`,
-      ]
-        .filter(Boolean)
-        .join("\n"),
-      "Share link",
-    );
+    process.stdout.write(formatShareLinks(output));
     prompts.outro(output.claimUrl ? "Claim the space to keep these links permanently." : "Done.");
   }
   return output;
+}
+
+export function formatShareLinks(output) {
+  const fields = [
+    ["Access", output.url || "Published"],
+    output.versionUrl && ["Version", output.versionUrl],
+    output.claimUrl && ["Claim", output.claimUrl],
+    output.claimExpiresAt && ["Expires", formatDate(output.claimExpiresAt)],
+  ].filter(Boolean);
+  const bar = pc.gray("│");
+  const lines = [bar, `${pc.green("◇")}  ${pc.bold("Share link")}`];
+  for (const [label, value] of fields) {
+    lines.push(bar, `${bar}  ${pc.bold(label)}`, `${bar}  ${value}`);
+  }
+  return `${lines.join("\n")}\n`;
+}
+
+function canReplaceSavedSpace(error) {
+  if (error?.stage === "claim_exchange") return true;
+  return error?.stage === "initial_publish" && [401, 403, 404].includes(error?.status);
 }
 
 async function selectAgentAndSession({ requestedAgent, requestedSession, interactive, limit, availableAdapters }) {

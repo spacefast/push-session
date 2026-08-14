@@ -1,7 +1,11 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { publishSession } from "../src/spacefast.js";
+import { publishSession, sessionRoute } from "../src/spacefast.js";
+
+test("builds a session route from one sanitized session ID", () => {
+  assert.equal(sessionRoute({ agent: "codex", id: "session/id" }), "sessions/session-id/index.html");
+});
 
 test("publishes paged files and creates a page-view-only Spacefast link", async () => {
   const requests = [];
@@ -72,6 +76,46 @@ test("updates a selected space with bearer authentication", async () => {
   assert.equal(requests[0].init.headers.authorization, "Bearer token-value");
   assert.equal(JSON.parse(requests[0].init.body.get("payload")).spaceId, "spc_saved");
   assert.equal(requests[1].init.headers.authorization, "Bearer token-value");
+});
+
+test("exchanges a claimed anonymous key and continues on the same space", async () => {
+  const requests = [];
+  let publishAttempts = 0;
+  const fetchImpl = async (url, init) => {
+    const requestUrl = String(url);
+    requests.push({ url: requestUrl, init });
+    if (requestUrl.endsWith("/claim/exchange")) {
+      return jsonResponse(200, { data: { credential: { accessToken: "continued-access" } } });
+    }
+    if (requestUrl.endsWith("/share-links")) {
+      return jsonResponse(201, { data: { url: "https://sessions.example/__/continued-link" } });
+    }
+    publishAttempts += 1;
+    if (publishAttempts === 1) {
+      return jsonResponse(409, { code: "space_claimed_credential_available", message: "Claimed" });
+    }
+    return jsonResponse(201, {
+      data: {
+        space: { id: "spc_claimed", liveUrl: "https://sessions.example/" },
+        next: { action: "done" },
+      },
+    });
+  };
+
+  const result = await publishSession({
+    fetchImpl,
+    session: { id: "session-claimed" },
+    html: "ok",
+    spaceId: "spc_claimed",
+    claimToken: "old-claim-key",
+  });
+
+  assert.equal(requests[1].url, "https://api.spacefast.com/v1/claim/exchange");
+  assert.equal(requests[1].init.headers.authorization, "Bearer old-claim-key");
+  assert.equal(requests[2].init.headers.authorization, "Bearer continued-access");
+  assert.equal(requests[3].init.headers.authorization, "Bearer continued-access");
+  assert.equal(result.space.id, "spc_claimed");
+  assert.equal(result.credential.accessToken, "continued-access");
 });
 
 test("switches giant sessions to manifest uploads and follows upload receipts", async () => {

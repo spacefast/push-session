@@ -48,11 +48,13 @@ test("renders a small T3-wire shell with transcript data in bounded JSON pages",
   assert.match(toolPage.events[0].payload.detail, /Input\n\{\n  "cmd": "npm test"/);
 });
 
-test("uses two UUIDs for an unguessable session route", () => {
-  assert.match(
-    createSharePath(),
-    /^sessions\/[0-9a-f]{8}-[0-9a-f-]{27}\/[0-9a-f]{8}-[0-9a-f-]{27}$/,
-  );
+test("uses the session ID as the single route segment", () => {
+  assert.equal(createSharePath("agent/session id"), "sessions/agent-session-id");
+  assert.match(createSharePath(), /^sessions\/[0-9a-f]{8}-[0-9a-f-]{27}$/);
+
+  const bundle = renderSessionBundle(session, [{ role: "assistant", content: "Done" }]);
+  assert.equal(bundle.basePath, "sessions/abc");
+  assert.equal(bundle.entryPath, "sessions/abc/index.html");
 });
 
 test("maps adapters into T3 provider-runtime wire language", () => {
