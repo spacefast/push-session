@@ -2,12 +2,14 @@ import { createClaudeAdapter } from "./claude.js";
 import { createCodexAdapter } from "./codex.js";
 import { createCursorAdapter } from "./cursor.js";
 import { createGeminiAdapter } from "./gemini.js";
+import { createPiAdapter } from "./pi.js";
 
 export const adapters = [
   createCodexAdapter(),
   createClaudeAdapter(),
   createGeminiAdapter(),
   createCursorAdapter(),
+  createPiAdapter(),
 ];
 
 export function findAdapter(name, available = adapters) {

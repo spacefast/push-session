@@ -1,4 +1,5 @@
 import fs from "node:fs";
+import os from "node:os";
 
 import * as prompts from "@clack/prompts";
 import pc from "picocolors";
@@ -198,18 +199,25 @@ function cancelIfNeeded(value) {
 
 function relativeDate(value) {
   if (!value) return null;
-  const delta = Date.now() - value;
-  if (delta < 60_000) return "now";
+  const time = value instanceof Date ? value.getTime() : Number(value);
+  if (!Number.isFinite(time)) return null;
+  const delta = Math.max(0, Date.now() - time);
+  if (delta < 1_000) return "now";
+  if (delta < 60_000) return `${Math.floor(delta / 1_000)}s ago`;
   if (delta < 3_600_000) return `${Math.floor(delta / 60_000)}m ago`;
   if (delta < 86_400_000) return `${Math.floor(delta / 3_600_000)}h ago`;
-  if (delta < 7 * 86_400_000) return `${Math.floor(delta / 86_400_000)}d ago`;
-  return new Date(value).toISOString().slice(0, 10);
+  if (delta < 30 * 86_400_000) return `${Math.floor(delta / 86_400_000)}d ago`;
+  return new Date(time).toISOString().slice(0, 10);
 }
 
 function shortProject(project) {
   if (!project) return null;
-  const parts = project.split(/[\\/]/).filter(Boolean);
-  return parts.at(-1) || project;
+  const normalized = String(project).replaceAll("\\", "/").replace(/\/$/, "");
+  const home = os.homedir().replaceAll("\\", "/").replace(/\/$/, "");
+  const display = normalized === home ? "~" : normalized.startsWith(`${home}/`) ? `~${normalized.slice(home.length)}` : normalized;
+  if (display.length <= 48) return display;
+  const parts = display.split("/").filter(Boolean);
+  return `…/${parts.slice(-3).join("/")}`;
 }
 
 function shortId(id) {
@@ -236,6 +244,7 @@ Agents
   claude         Anthropic Claude Code
   gemini         Google Gemini CLI
   cursor         Cursor Agent
+  pi             Pi coding agent
 
 Options
   --space <id>   Publish to a specific Spacefast space

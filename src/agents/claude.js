@@ -3,11 +3,15 @@ import os from "node:os";
 import path from "node:path";
 
 import {
+  byRecent,
   cleanTitle,
   contentText,
   exists,
   fileStats,
   isBootstrapMessage,
+  isTitleMessage,
+  latestJsonLineTimestamp,
+  latestTimestamp,
   readJsonLines,
   readPrefix,
   safeJson,
@@ -26,17 +30,37 @@ export function createClaudeAdapter(options = {}) {
     installed: () => exists(projectsDir),
     discover(options = {}) {
       if (!exists(projectsDir)) return [];
-      const sessions = [];
+      const candidates = [];
       for (const directory of safeDirectories(projectsDir)) {
         const projectDir = path.join(projectsDir, directory);
         const index = readSessionIndex(path.join(projectDir, "sessions-index.json"));
         for (const file of safeFiles(projectDir).filter((name) => name.endsWith(".jsonl") && (!options.query || name.includes(options.query)))) {
           const filePath = path.join(projectDir, file);
           const id = file.slice(0, -6);
-          sessions.push(inspectClaudeSession(filePath, id, index.get(id), directory));
+          const indexed = index.entries.get(id);
+          if (indexed?.isSidechain) continue;
+          const stats = fileStats(filePath);
+          candidates.push({
+            filePath,
+            id,
+            indexed,
+            stats,
+            project: indexed?.projectPath || index.originalPath || null,
+            fallbackProject: decodeProject(directory),
+            recency: latestTimestamp(indexed?.modified, indexed?.fileMtime, stats.updatedAt) || 0,
+          });
         }
       }
-      return sessions.filter(Boolean).sort(byRecent).slice(0, options.limit || 500);
+      candidates.sort((left, right) => right.recency - left.recency);
+      const sessions = [];
+      const limit = options.limit || 500;
+      for (const candidate of candidates) {
+        const session = inspectClaudeSession(candidate);
+        if (!session) continue;
+        sessions.push(session);
+        if (sessions.length >= limit) break;
+      }
+      return sessions.sort(byRecent);
     },
     load(session) {
       return parseClaudeMessages(session.filePath);
@@ -45,26 +69,28 @@ export function createClaudeAdapter(options = {}) {
 }
 
 function readSessionIndex(filePath) {
-  const map = new Map();
+  const result = { entries: new Map(), originalPath: null };
   try {
     const parsed = JSON.parse(fs.readFileSync(filePath, "utf8"));
-    for (const entry of parsed.entries || []) map.set(entry.sessionId, entry);
+    result.originalPath = typeof parsed.originalPath === "string" ? parsed.originalPath : null;
+    for (const entry of parsed.entries || []) result.entries.set(entry.sessionId, entry);
   } catch {}
-  return map;
+  return result;
 }
 
-function inspectClaudeSession(filePath, id, indexed, directory) {
-  const stats = fileStats(filePath);
+function inspectClaudeSession({ filePath, id, indexed, project, fallbackProject, stats }) {
   const peek = peekClaude(filePath);
-  const title = cleanTitle(indexed?.firstPrompt || peek.title) || "Untitled Claude session";
+  if (peek.isSidechain) return null;
+  const indexedTitle = [indexed?.customTitle, indexed?.displayName, indexed?.summary, indexed?.firstPrompt].find(isTitleMessage);
+  const title = cleanTitle(indexedTitle || peek.title) || "Untitled Claude session";
   return {
     agent: "claude",
     agentLabel: "Claude Code",
     id,
     title,
-    project: indexed?.projectPath || peek.project || decodeProject(directory),
+    project: project || peek.project || fallbackProject,
     createdAt: timestamp(indexed?.created) || peek.createdAt || stats.createdAt,
-    updatedAt: timestamp(indexed?.modified) || stats.updatedAt,
+    updatedAt: latestTimestamp(indexed?.modified, peek.updatedAt) || stats.updatedAt,
     messageCount: indexed?.messageCount || peek.messageCount,
     filePath,
   };
@@ -74,19 +100,21 @@ function peekClaude(filePath) {
   let title;
   let project;
   let createdAt;
+  let isSidechain = false;
   let messageCount = 0;
-  for (const line of readPrefix(filePath).split(/\r?\n/).filter(Boolean)) {
+  for (const line of readPrefix(filePath, 2 * 1024 * 1024).split(/\r?\n/).filter(Boolean)) {
     const entry = safeJson(line);
     if (!entry) continue;
+    if (entry.isSidechain === true) isSidechain = true;
     if (!project && entry.cwd) project = entry.cwd;
     if (!createdAt && entry.timestamp) createdAt = timestamp(entry.timestamp);
     if (entry.type === "user" || entry.type === "assistant") messageCount += 1;
     if (!title && entry.type === "user") {
       const value = extractClaudeText(entry.message?.content);
-      if (value && !isBootstrapMessage(value)) title = value;
+      if (isTitleMessage(value)) title = value;
     }
   }
-  return { title, project, createdAt, messageCount };
+  return { title, project, createdAt, updatedAt: latestJsonLineTimestamp(filePath), messageCount, isSidechain };
 }
 
 function parseClaudeMessages(filePath) {
@@ -153,9 +181,7 @@ function safeFiles(root) {
 }
 
 function decodeProject(directory) {
-  return directory.startsWith("-") ? directory.replace(/-/g, "/") : directory;
-}
-
-function byRecent(a, b) {
-  return (b.updatedAt || b.createdAt || 0) - (a.updatedAt || a.createdAt || 0);
+  if (!directory.startsWith("-")) return directory;
+  const decoded = directory.replace(/-/g, "/");
+  return exists(decoded) ? decoded : directory;
 }
