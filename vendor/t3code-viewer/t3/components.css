@@ -1,0 +1,17 @@
+.work-status.neutral {
+  color: var(--muted-foreground);
+}
+
+.code-title {
+  padding: 6px 46px 5px 12px;
+  border: 1px solid var(--border);
+  border-bottom: 0;
+  border-radius: 10px 10px 0 0;
+  background: var(--secondary);
+  color: var(--muted-foreground);
+  font: 11px/1.5 "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
+}
+
+.code-title + pre {
+  border-radius: 0 0 10px 10px;
+}

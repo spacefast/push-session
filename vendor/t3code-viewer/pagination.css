@@ -1,0 +1,71 @@
+.page-status {
+  display: flex;
+  min-height: 70px;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  padding: 14px;
+  color: var(--muted-foreground);
+  font-size: 12px;
+}
+
+.page-status.error {
+  margin-bottom: 28px;
+  border: 1px solid color-mix(in srgb, var(--destructive) 40%, var(--border));
+  border-radius: 10px;
+  color: var(--destructive);
+}
+
+.page-status button {
+  padding: 5px 9px;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  background: var(--card);
+  color: var(--foreground);
+  cursor: pointer;
+}
+
+.provenance-bubble {
+  position: fixed;
+  right: 18px;
+  bottom: 18px;
+  z-index: 10;
+  display: flex;
+  width: min(350px, calc(100vw - 36px));
+  align-items: flex-start;
+  gap: 9px;
+  padding: 10px 12px;
+  border: 1px solid color-mix(in srgb, var(--border) 82%, transparent);
+  border-radius: 12px;
+  background: color-mix(in srgb, var(--card) 92%, transparent);
+  box-shadow: 0 12px 34px rgb(0 0 0 / 12%);
+  color: var(--muted-foreground);
+  font-size: 11px;
+  line-height: 1.45;
+  backdrop-filter: blur(12px);
+}
+
+.provenance-bubble svg {
+  width: 15px;
+  height: 15px;
+  flex: none;
+  margin-top: 1px;
+  color: var(--foreground);
+}
+
+.provenance-bubble a {
+  color: var(--foreground);
+  font-weight: 650;
+}
+
+@media (max-width: 600px) {
+  .provenance-bubble {
+    position: static;
+    width: 100%;
+    margin: 0 0 20px;
+  }
+
+  .timeline {
+    padding-bottom: 34px;
+  }
+}
