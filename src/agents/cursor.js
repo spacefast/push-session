@@ -2,7 +2,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
-import { cleanTitle, contentText, exists, fileStats, readJsonLines } from "./common.js";
+import { byRecent, cleanTitle, contentText, exists, fileStats, isBootstrapMessage, isTitleMessage, readJsonLines, timestamp } from "./common.js";
 
 export function createCursorAdapter(options = {}) {
   const home = options.home || path.join(os.homedir(), ".cursor");
@@ -17,20 +17,24 @@ export function createCursorAdapter(options = {}) {
     discover(options = {}) {
       const sessions = [];
       for (const project of directories(projectsDir)) {
-        const transcriptDir = path.join(projectsDir, project, "agent-transcripts");
+        const projectDir = path.join(projectsDir, project);
+        const transcriptDir = path.join(projectDir, "agent-transcripts");
+        const projectPath = detectProject(projectDir, project);
         for (const transcript of findTranscripts(transcriptDir)) {
           if (options.query && !transcript.id.includes(options.query)) continue;
           const entries = readJsonLines(transcript.filePath);
-          const firstUser = entries.find((entry) => entry.role === "user");
+          const firstUser = entries.find((entry) => entry.role === "user" && isTitleMessage(cleanCursorText(extractCursorText(entry.message?.content))))
+            || entries.find((entry) => entry.role === "user");
           const stats = fileStats(transcript.filePath);
+          const entryTimestamps = entries.map((entry) => timestamp(entry.timestamp)).filter(Boolean);
           sessions.push({
             agent: "cursor",
             agentLabel: "Cursor Agent",
             id: transcript.id,
-            title: cleanTitle(extractCursorText(firstUser?.message?.content)) || "Untitled Cursor session",
-            project: decodeProject(project),
-            createdAt: stats.createdAt,
-            updatedAt: stats.updatedAt,
+            title: cleanTitle(cleanCursorText(extractCursorText(firstUser?.message?.content))) || "Untitled Cursor session",
+            project: projectPath,
+            createdAt: entryTimestamps.length > 0 ? Math.min(...entryTimestamps) : stats.createdAt,
+            updatedAt: entryTimestamps.length > 0 ? Math.max(...entryTimestamps) : stats.updatedAt,
             messageCount: entries.filter((entry) => entry.role === "user" || entry.role === "assistant").length,
             filePath: transcript.filePath,
           });
@@ -43,7 +47,7 @@ export function createCursorAdapter(options = {}) {
       for (const entry of readJsonLines(session.filePath)) {
         if (entry.role !== "user" && entry.role !== "assistant") continue;
         const content = cleanCursorText(extractCursorText(entry.message?.content));
-        if (content) messages.push({ role: entry.role, content, createdAt: entry.timestamp });
+        if (content && !isBootstrapMessage(content)) messages.push({ role: entry.role, content, createdAt: entry.timestamp });
       }
       return messages;
     },
@@ -89,11 +93,15 @@ function directories(root) {
   }
 }
 
-function decodeProject(name) {
+function detectProject(projectDir, name) {
+  for (const metadataFile of [".workspace-trusted", "repo.json"]) {
+    try {
+      const metadata = JSON.parse(fs.readFileSync(path.join(projectDir, metadataFile), "utf8"));
+      const exact = metadata.workspacePath || metadata.projectPath || metadata.rootPath || metadata.path;
+      if (typeof exact === "string" && exact) return exact;
+    } catch {}
+  }
+  if (name === "empty-window" || /^\d+$/.test(name)) return null;
   const value = `/${name.replace(/-/g, "/")}`;
   return exists(value) ? value : name;
-}
-
-function byRecent(a, b) {
-  return (b.updatedAt || b.createdAt || 0) - (a.updatedAt || a.createdAt || 0);
 }

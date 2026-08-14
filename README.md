@@ -9,7 +9,7 @@ npx push-session claude
 npx push-session codex <session-id>
 ```
 
-It discovers local Codex, Claude Code, Gemini CLI, and Cursor Agent sessions,
+It discovers local Codex, Claude Code, Gemini CLI, Cursor Agent, and Pi sessions,
 then asks which one to publish. The first run creates an anonymous Spacefast
 space; claim it to keep using it, or set `SPACEFAST_TOKEN` and `--space <id>`.
 

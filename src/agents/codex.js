@@ -2,11 +2,14 @@ import os from "node:os";
 import path from "node:path";
 
 import {
+  byRecent,
   cleanTitle,
   contentText,
   exists,
   fileStats,
   isBootstrapMessage,
+  isTitleMessage,
+  latestJsonLineTimestamp,
   readJsonLines,
   readPrefix,
   safeJson,
@@ -30,19 +33,21 @@ export function createCodexAdapter(options = {}) {
     discover(options = {}) {
       const seen = new Set();
       const sessions = [];
-      const allFiles = [];
+      const candidates = [];
       for (const root of roots) {
-        allFiles.push(...walkFiles(root, (_file, name) => name.endsWith(".jsonl")));
+        for (const filePath of walkFiles(root, (_file, name) => name.endsWith(".jsonl"))) {
+          if (options.query && !path.basename(filePath).includes(options.query)) continue;
+          candidates.push({ filePath, stats: fileStats(filePath) });
+        }
       }
-      const candidates = allFiles
-        .filter((filePath) => !options.query || path.basename(filePath).includes(options.query))
-        .sort((left, right) => path.basename(right).localeCompare(path.basename(left)))
-        .slice(0, options.limit || 500);
-      for (const filePath of candidates) {
-          const session = inspectCodexSession(filePath);
-          if (!session || seen.has(session.id)) continue;
-          seen.add(session.id);
-          sessions.push(session);
+      candidates.sort((left, right) => right.stats.updatedAt - left.stats.updatedAt);
+      const limit = options.limit || 500;
+      for (const candidate of candidates) {
+        const session = inspectCodexSession(candidate.filePath, candidate.stats);
+        if (!session || seen.has(session.id)) continue;
+        seen.add(session.id);
+        sessions.push(session);
+        if (sessions.length >= limit) break;
       }
       return sessions.sort(byRecent);
     },
@@ -52,8 +57,8 @@ export function createCodexAdapter(options = {}) {
   };
 }
 
-function inspectCodexSession(filePath) {
-  const lines = readPrefix(filePath).split(/\r?\n/).filter(Boolean);
+function inspectCodexSession(filePath, knownStats) {
+  const lines = readPrefix(filePath, 2 * 1024 * 1024).split(/\r?\n/).filter(Boolean);
   let metadata;
   let title;
   let messageCount = 0;
@@ -66,19 +71,19 @@ function inspectCodexSession(filePath) {
     if (role === "user" || role === "assistant") messageCount += 1;
     if (!title && role === "user") {
       const value = contentText(entry.payload.content, USER_TYPES);
-      if (value && !isBootstrapMessage(value)) title = cleanTitle(value);
+      if (isTitleMessage(value)) title = cleanTitle(value);
     }
   }
   if (!metadata) return null;
-  const stats = fileStats(filePath);
+  const stats = knownStats || fileStats(filePath);
   return {
     agent: "codex",
     agentLabel: "Codex",
     id: metadata.id || path.basename(filePath, ".jsonl").replace(/^rollout-[^-]+-/, ""),
-    title: title || "Untitled Codex session",
+    title: cleanTitle(metadata.name || metadata.title) || title || "Untitled Codex session",
     project: metadata.cwd || null,
     createdAt: timestamp(metadata.timestamp) || stats.createdAt,
-    updatedAt: stats.updatedAt,
+    updatedAt: latestJsonLineTimestamp(filePath) || stats.updatedAt,
     messageCount,
     filePath,
   };
@@ -171,8 +176,4 @@ function coalesce(messages) {
     }
   }
   return result;
-}
-
-function byRecent(a, b) {
-  return (b.updatedAt || b.createdAt || 0) - (a.updatedAt || a.createdAt || 0);
 }

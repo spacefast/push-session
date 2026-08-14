@@ -45,6 +45,24 @@ export function readPrefix(filePath, maxBytes = 256 * 1024) {
   }
 }
 
+export function readTail(filePath, maxBytes = 256 * 1024) {
+  let descriptor;
+  try {
+    descriptor = fs.openSync(filePath, "r");
+    const size = fs.fstatSync(descriptor).size;
+    const start = Math.max(0, size - maxBytes);
+    const buffer = Buffer.allocUnsafe(size - start);
+    const bytesRead = fs.readSync(descriptor, buffer, 0, buffer.length, start);
+    let value = buffer.subarray(0, bytesRead).toString("utf8");
+    if (start > 0) value = value.slice(Math.max(0, value.indexOf("\n") + 1));
+    return value;
+  } catch {
+    return "";
+  } finally {
+    if (descriptor !== undefined) fs.closeSync(descriptor);
+  }
+}
+
 export function readJsonLines(filePath) {
   try {
     return fs
@@ -72,9 +90,30 @@ export function cleanTitle(value, max = 100) {
 }
 
 export function timestamp(value) {
-  if (typeof value === "number" && Number.isFinite(value)) return value;
+  if (value instanceof Date) return Number.isFinite(value.getTime()) ? value.getTime() : null;
+  if (typeof value === "number" && Number.isFinite(value)) {
+    const absolute = Math.abs(value);
+    if (absolute > 0 && absolute < 100_000_000_000) return value * 1_000;
+    if (absolute > 100_000_000_000_000) return value / 1_000;
+    return value;
+  }
   const parsed = Date.parse(value);
   return Number.isFinite(parsed) ? parsed : null;
+}
+
+export function latestJsonLineTimestamp(filePath, maxBytes = 256 * 1024) {
+  const lines = readTail(filePath, maxBytes).split(/\r?\n/).filter(Boolean);
+  for (let index = lines.length - 1; index >= 0; index -= 1) {
+    const entry = safeJson(lines[index]);
+    const value = timestamp(entry?.timestamp ?? entry?.createdAt ?? entry?.updatedAt);
+    if (value) return value;
+  }
+  return null;
+}
+
+export function latestTimestamp(...values) {
+  const valid = values.map(timestamp).filter((value) => value !== null);
+  return valid.length > 0 ? Math.max(...valid) : null;
 }
 
 export function contentText(content, acceptedTypes) {
@@ -93,8 +132,23 @@ export function isBootstrapMessage(value) {
   return (
     text.startsWith("<environment_context>") ||
     text.startsWith("<user_instructions>") ||
-    text.startsWith("<system-reminder>")
+    text.startsWith("<system-reminder>") ||
+    text.startsWith("<INSTRUCTIONS>") ||
+    text.startsWith("# AGENTS.md instructions")
   );
+}
+
+export function isTitleMessage(value) {
+  const text = String(value || "").trim();
+  return Boolean(text) && !isBootstrapMessage(text) && !text.startsWith("/") && !text.startsWith("?");
+}
+
+export function byRecent(a, b) {
+  const recency = (b.updatedAt || b.createdAt || 0) - (a.updatedAt || a.createdAt || 0);
+  if (recency !== 0) return recency;
+  const creation = (b.createdAt || 0) - (a.createdAt || 0);
+  if (creation !== 0) return creation;
+  return String(a.id).localeCompare(String(b.id));
 }
 
 export function fileStats(filePath) {

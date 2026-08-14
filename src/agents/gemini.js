@@ -2,7 +2,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
-import { cleanTitle, contentText, exists, fileStats, timestamp } from "./common.js";
+import { byRecent, cleanTitle, contentText, exists, fileStats, isTitleMessage, readJsonLines, timestamp } from "./common.js";
 
 export function createGeminiAdapter(options = {}) {
   const home = options.home || path.join(os.homedir(), ".gemini");
@@ -16,32 +16,39 @@ export function createGeminiAdapter(options = {}) {
     installed: () => exists(projectsDir),
     discover(options = {}) {
       const projectMap = loadProjectMap(path.join(home, "projects.json"));
-      const sessions = [];
+      const sessions = new Map();
       for (const projectName of directories(projectsDir)) {
         const chatsDir = path.join(projectsDir, projectName, "chats");
-        for (const file of files(chatsDir).filter((name) => name.startsWith("session-") && name.endsWith(".json") && (!options.query || name.includes(options.query)))) {
+        for (const file of files(chatsDir).filter((name) => name.startsWith("session-") && /\.jsonl?$/.test(name))) {
           const filePath = path.join(chatsDir, file);
-          const record = readJson(filePath);
-          if (!record || !Array.isArray(record.messages)) continue;
-          const firstUser = record.messages.find((message) => message.type === "user");
+          const record = readRecord(filePath);
+          if (!record || record.kind === "subagent" || !Array.isArray(record.messages)) continue;
+          if (options.query && !file.includes(options.query) && !String(record.sessionId || "").startsWith(options.query)) continue;
+          const conversationMessages = record.messages.filter((message) => message.type === "user" || message.type === "gemini");
+          if (conversationMessages.length === 0) continue;
+          const firstUser = record.messages.find((message) => message.type === "user" && isTitleMessage(extractGeminiText(message.content)))
+            || record.messages.find((message) => message.type === "user");
           const stats = fileStats(filePath);
-          sessions.push({
+          const title = [record.summary, record.displayName, record.firstUserMessage, extractGeminiText(firstUser?.content)].find(isTitleMessage);
+          const session = {
             agent: "gemini",
             agentLabel: "Gemini CLI",
-            id: record.sessionId || file.slice(0, -5),
-            title: cleanTitle(extractGeminiText(firstUser?.content)) || "Untitled Gemini session",
+            id: record.sessionId || file.replace(/\.jsonl?$/, ""),
+            title: cleanTitle(title) || "Untitled Gemini session",
             project: projectMap.get(projectName) || null,
             createdAt: timestamp(record.startTime) || stats.createdAt,
             updatedAt: timestamp(record.lastUpdated) || stats.updatedAt,
-            messageCount: record.messages.length,
+            messageCount: record.messageCount ?? conversationMessages.length,
             filePath,
-          });
+          };
+          const existing = sessions.get(session.id);
+          if (!existing || byRecent(session, existing) < 0) sessions.set(session.id, session);
         }
       }
-      return sessions.sort(byRecent).slice(0, options.limit || 500);
+      return [...sessions.values()].sort(byRecent).slice(0, options.limit || 500);
     },
     load(session) {
-      const record = readJson(session.filePath);
+      const record = readRecord(session.filePath);
       if (!record || !Array.isArray(record.messages)) return [];
       const messages = [];
       for (const message of record.messages) {
@@ -71,7 +78,8 @@ export function createGeminiAdapter(options = {}) {
 
 function extractGeminiText(content) {
   if (typeof content === "string") return content.trim();
-  return contentText(content, new Set(["text"]));
+  if (!Array.isArray(content)) return "";
+  return contentText(content.filter((part) => !part?.type || part.type === "text"));
 }
 
 function loadProjectMap(filePath) {
@@ -79,6 +87,18 @@ function loadProjectMap(filePath) {
   const data = readJson(filePath);
   for (const [folder, name] of Object.entries(data?.projects || {})) map.set(name, folder);
   return map;
+}
+
+function readRecord(filePath) {
+  if (!filePath.endsWith(".jsonl")) return readJson(filePath);
+  const entries = readJsonLines(filePath);
+  if (entries.length === 0) return null;
+  const record = { ...entries[0], messages: Array.isArray(entries[0].messages) ? [...entries[0].messages] : [] };
+  for (const entry of entries.slice(1)) {
+    if (entry.$set && typeof entry.$set === "object") Object.assign(record, entry.$set);
+    else if (entry.type) record.messages.push(entry);
+  }
+  return record;
 }
 
 function readJson(filePath) {
@@ -103,8 +123,4 @@ function files(root) {
   } catch {
     return [];
   }
-}
-
-function byRecent(a, b) {
-  return (b.updatedAt || b.createdAt || 0) - (a.updatedAt || a.createdAt || 0);
 }
