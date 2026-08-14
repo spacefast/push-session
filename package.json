@@ -4,7 +4,7 @@
   "description": "Share local AI coding-agent sessions with one npx command.",
   "type": "module",
   "bin": {
-    "push-session": "./bin/push-session.js"
+    "push-session": "bin/push-session.js"
   },
   "exports": {
     ".": "./src/index.js"
