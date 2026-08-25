@@ -5,9 +5,10 @@ import path from "node:path";
 import test from "node:test";
 
 import { parseArtifactArgs } from "../src/artifacts/args.js";
-import { parseClaudeArtifactTranscript } from "../src/artifacts/claude.js";
+import { discoverClaudeSessionArtifacts, parseClaudeArtifactTranscript } from "../src/artifacts/claude.js";
 import { writeArtifactBundle } from "../src/artifacts/files.js";
 import { renderClaudeArtifactBundle } from "../src/artifacts/render.js";
+import { renderSessionWithArtifacts } from "../src/artifacts/session.js";
 
 test("reconstructs every published Claude artifact version from transcript writes and edits", async (context) => {
   const home = fs.mkdtempSync(path.join(os.tmpdir(), "push-session-artifact-"));
@@ -122,6 +123,55 @@ test("parses artifact commands independently from session sharing", () => {
   assert.throws(() => parseArtifactArgs(["publish", "one", "--all"]), /query or --all/);
 });
 
+test("discovers subagent artifacts for the parent session and links every bundled version", async (context) => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), "push-session-attached-artifact-"));
+  context.after(() => fs.rmSync(home, { recursive: true, force: true }));
+  const sessionId = "parent-session";
+  const artifactId = "attached-artifact";
+  const sourcePath = path.join(home, "scratchpad", "attached.html");
+  const projectDir = path.join(home, "projects", "-work-demo");
+  const transcriptPath = path.join(projectDir, `${sessionId}.jsonl`);
+  const subagentPath = path.join(projectDir, sessionId, "subagents", "agent-worker.jsonl");
+  fs.mkdirSync(path.dirname(subagentPath), { recursive: true });
+  writeJsonl(transcriptPath, [
+    { type: "user", sessionId, timestamp: "2026-08-01T12:00:00Z", cwd: "/work/demo", message: { content: "Build it" } },
+    { type: "frame-link", sessionId, path: sourcePath, frameUrl: `https://claude.ai/code/artifact/${artifactId}`, title: "Attached artifact", timestamp: "2026-08-01T12:00:04Z" },
+  ]);
+  writeJsonl(subagentPath, [
+    assistantTool(sessionId, "2026-08-01T12:00:01Z", { type: "tool_use", id: "write-1", name: "Write", input: { file_path: sourcePath, content: "<!doctype html><h1>Attached</h1>" } }),
+    toolResult(sessionId, "2026-08-01T12:00:02Z", "write-1", "Wrote file"),
+    assistantTool(sessionId, "2026-08-01T12:00:03Z", { type: "tool_use", id: "artifact-1", name: "Artifact", input: { file_path: sourcePath, title: "Attached artifact", favicon: "🧩", label: "first" } }),
+    toolResult(sessionId, "2026-08-01T12:00:04Z", "artifact-1", `Published at https://claude.ai/code/artifact/${artifactId}`),
+  ]);
+
+  const artifacts = await discoverClaudeSessionArtifacts({ agent: "claude", id: sessionId, filePath: transcriptPath }, { home });
+  assert.equal(artifacts.length, 1);
+  assert.deepEqual(artifacts[0].sessionIds, [sessionId]);
+  assert.equal(artifacts[0].recoverableVersions, 1);
+
+  const bundle = renderSessionWithArtifacts(
+    { agent: "claude", agentLabel: "Claude Code", id: sessionId, title: "Parent session" },
+    [
+      { role: "assistant", content: `Open [the artifact](https://claude.ai/code/artifact/${artifactId}).` },
+      { role: "tool", id: "artifact-1", name: "Artifact", output: `Published at https://claude.ai/code/artifact/${artifactId}` },
+    ],
+    artifacts,
+    { publishedAt: "2026-08-01T13:00:00Z" },
+  );
+  assert.equal(bundle.artifactCount, 1);
+  assert.equal(bundle.artifactVersions, 1);
+  assert.ok(bundle.files.some((file) => file.path === `sessions/${sessionId}/artifacts/${artifactId}/index.html` && file.content === "<!doctype html><h1>Attached</h1>"));
+  assert.ok(bundle.files.some((file) => file.path === `sessions/${sessionId}/artifacts/${artifactId}/versions/0001-first/index.html`));
+
+  const shell = payloadFromHtml(bundle.files.find((file) => file.path === `sessions/${sessionId}/index.html`).content);
+  assert.equal(shell.artifacts[0].href, `artifacts/${artifactId}/index.html`);
+  const events = bundle.files
+    .filter((file) => file.path.includes("/pages/"))
+    .flatMap((file) => JSON.parse(file.content).events);
+  assert.match(events[0].payload.detail, new RegExp(`artifacts/${artifactId}/index\\.html`));
+  assert.equal(events[1].payload.data.artifact.href, `artifacts/${artifactId}/versions/0001-first/index.html`);
+});
+
 function fakeArtifact() {
   const id = "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee";
   const versions = [
@@ -164,4 +214,10 @@ function toolResult(sessionId, timestamp, toolUseId, content) {
 
 function writeJsonl(filePath, entries) {
   fs.writeFileSync(filePath, `${entries.map((entry) => JSON.stringify(entry)).join("\n")}\n`);
+}
+
+function payloadFromHtml(html) {
+  const payload = html.match(/<script id="push-session-data" type="application\/json">([^<]+)<\/script>/)?.[1];
+  assert.ok(payload, "session shell should contain its runtime payload");
+  return JSON.parse(payload);
 }

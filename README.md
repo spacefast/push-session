@@ -22,7 +22,10 @@ to keep using it, or set `SPACEFAST_TOKEN` for owned publishing.
 
 Sessions render as paginated, read-only transcripts with Markdown and tool
 calls. Each share uses the session ID as its route and a scoped, unguessable
-view-only access link.
+view-only access link. Claude sessions also recover and upload their published
+HTML or Markdown artifacts automatically. The session page links each artifact,
+and transcript references point at the recovered copy inside the same private
+Spacefast share.
 
 > Sessions may contain code, file paths, commands, or secrets. Review before
 > sharing. Anyone with the generated link can view it.

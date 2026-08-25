@@ -93,19 +93,84 @@ test("replaces rejected implicit global state without blocking the publish", asy
   assert.match(warnings[0], /no longer reusable/);
 });
 
-function fakeAdapter() {
+test("uploads recovered artifacts with their Claude session", async (context) => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "push-session-claude-artifacts-"));
+  context.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const env = { PUSH_SESSION_CONFIG: path.join(root, "config.json") };
+  const uploadedPaths = [];
+  const fetchImpl = async (url, init) => {
+    if (String(url).endsWith("/share-links")) {
+      return jsonResponse(201, { data: { url: "https://sessions.example/__/with-artifacts" } });
+    }
+    uploadedPaths.push(...init.body.getAll("files").map((file) => file.name));
+    return jsonResponse(201, {
+      data: {
+        space: { id: "spc_artifact_session", liveUrl: "https://sessions.example/" },
+        claim: { key: "artifact-session-key" },
+        next: { action: "done" },
+      },
+    });
+  };
+  const artifactId = "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee";
+  const version = {
+    version: 1,
+    toolUseId: "artifact-tool",
+    label: "first",
+    sourcePath: "/tmp/artifact.html",
+    publishedAt: "2026-08-01T12:00:00Z",
+    source: {
+      content: "<!doctype html><h1>Artifact</h1>",
+      extension: ".html",
+      recoveredFrom: "transcript-write",
+      bytes: 39,
+      sha256: "artifact-hash",
+    },
+  };
+  const artifact = {
+    id: artifactId,
+    url: `https://claude.ai/code/artifact/${artifactId}`,
+    sessionId: "session-one",
+    sessionIds: ["session-one"],
+    title: "Session artifact",
+    favicon: "🧩",
+    sourcePath: version.sourcePath,
+    versions: [version],
+    recoverableVersions: 1,
+    latest: version,
+  };
+  const adapter = fakeAdapter("claude", [
+    { role: "tool", id: "artifact-tool", name: "Artifact", output: `Published ${artifact.url}` },
+    { role: "assistant", content: `[Open artifact](${artifact.url})` },
+  ]);
+
+  const result = await run(["claude", "session-one", "--json"], {
+    adapters: [adapter],
+    discoverSessionArtifacts: async () => [artifact],
+    env,
+    fetchImpl,
+    log: () => {},
+    warn: () => {},
+  });
+
+  assert.equal(result.artifacts, 1);
+  assert.equal(result.artifactVersions, 1);
+  assert.ok(uploadedPaths.includes(`sessions/session-one/artifacts/${artifactId}/index.html`));
+  assert.ok(uploadedPaths.includes(`sessions/session-one/artifacts/${artifactId}/versions/0001-first/index.html`));
+});
+
+function fakeAdapter(id = "codex", messages = [{ role: "assistant", content: "Done" }]) {
   const session = {
-    agent: "codex",
-    agentLabel: "Codex",
+    agent: id,
+    agentLabel: id === "claude" ? "Claude Code" : "Codex",
     id: "session-one",
     title: "Session one",
   };
   return {
-    id: "codex",
-    label: "Codex",
+    id,
+    label: session.agentLabel,
     installed: () => true,
     discover: () => [session],
-    load: () => [{ role: "assistant", content: "Done" }],
+    load: () => messages,
   };
 }
 

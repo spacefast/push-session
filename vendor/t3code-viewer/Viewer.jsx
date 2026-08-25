@@ -3,6 +3,7 @@ import { createRoot } from "react-dom/client";
 
 import "./viewer.css";
 import "./pagination.css";
+import "./artifact-links.css";
 import { AssistantTimelineRow, UserTimelineRow, WorkGroupSection } from "./t3/MessagesTimeline.jsx";
 
 function readPayload() {
@@ -29,7 +30,28 @@ function Timeline({ messages }) {
   );
 }
 
-function SessionHeader({ session, stats }) {
+function ArtifactShelf({ artifacts }) {
+  if (!artifacts?.length) return null;
+  return (
+    <section className="artifact-shelf" aria-label="Session artifacts">
+      <div className="artifact-shelf-title">Artifacts</div>
+      <div className="artifact-cards">
+        {artifacts.map((artifact) => (
+          <a className="artifact-card" href={artifact.href} target="_blank" rel="noreferrer" key={artifact.id}>
+            <span className="artifact-icon">{artifact.favicon || "◇"}</span>
+            <span className="artifact-card-copy">
+              <strong>{artifact.title || "Claude artifact"}</strong>
+              <small>{artifact.recoveredVersions} recovered version{artifact.recoveredVersions === 1 ? "" : "s"}</small>
+            </span>
+            <span className="artifact-arrow" aria-hidden="true">↗</span>
+          </a>
+        ))}
+      </div>
+    </section>
+  );
+}
+
+function SessionHeader({ session, stats, artifacts }) {
   return (
     <header className="session-header">
       <div className="topline">
@@ -42,8 +64,10 @@ function SessionHeader({ session, stats }) {
         {session.createdAt ? <span><Icon name="calendar" />{longTimestamp(session.createdAt)}</span> : null}
         <span><Icon name="message" />{stats.messages} messages</span>
         <span><Icon name="terminal" />{stats.tools} tool calls</span>
+        {stats.artifacts ? <span><Icon name="file" />{stats.artifacts} artifact{stats.artifacts === 1 ? "" : "s"}</span> : null}
         <span title={session.threadId}><Icon name="hash" />{shortId(session.threadId)}</span>
       </div>
+      <ArtifactShelf artifacts={artifacts} />
     </header>
   );
 }
@@ -220,7 +244,7 @@ function App() {
   const { items, loading, error, loadNext, loadedPages, hasMore } = useWirePages(pages);
   return (
     <div className="app-shell">
-      <SessionHeader session={payload.session} stats={payload.stats} />
+      <SessionHeader session={payload.session} stats={payload.stats} artifacts={payload.artifacts} />
       <Timeline messages={items} />
       <PageSentinel loading={loading} error={error} hasMore={hasMore} loadNext={loadNext} loadedPages={loadedPages} />
       <footer>Shared with <a href="https://www.npmjs.com/package/push-session" target="_blank" rel="noreferrer">push-session</a></footer>

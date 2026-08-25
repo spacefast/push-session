@@ -7,6 +7,7 @@ const DEFAULT_PAGE_ITEMS = 100;
 
 export function renderSessionBundle(session, messages, options = {}) {
   const basePath = options.basePath || createSharePath(session.id);
+  const artifacts = Array.isArray(options.artifacts) ? options.artifacts : [];
   const maxBytes = options.pageBytes || DEFAULT_PAGE_BYTES;
   const sourceItems = messages.map((message, index) => toT3WireItem(message, index, {
     provider: session.agent,
@@ -22,6 +23,7 @@ export function renderSessionBundle(session, messages, options = {}) {
     items: sourceItems.length,
     messages: sourceItems.filter((item) => item.payload.itemType === "user_message" || item.payload.itemType === "assistant_message").length,
     tools: sourceItems.filter((item) => isToolItemType(item.payload.itemType)).length,
+    artifacts: artifacts.length,
     pages: itemPages.length,
   };
   const shell = {
@@ -36,6 +38,7 @@ export function renderSessionBundle(session, messages, options = {}) {
       updatedAt: toIso(session.updatedAt),
     },
     pages: pageNames,
+    artifacts,
     stats,
     publishedAt: options.publishedAt || new Date().toISOString(),
   };
@@ -102,6 +105,7 @@ export function toT3WireItem(message, index, context = {}) {
     command: message.command,
     summary: message.summary,
     isError: message.isError || undefined,
+    artifact: message.artifact,
   });
 
   const itemId = message.id || `${itemType}-${index + 1}`;

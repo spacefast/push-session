@@ -206,6 +206,7 @@ function artifactSummary(artifact) {
     url: artifact.url,
     title: artifact.title,
     sessionId: artifact.sessionId,
+    sessionIds: artifact.sessionIds,
     project: artifact.project,
     sourcePath: artifact.sourcePath,
     publishes: artifact.versions.length,

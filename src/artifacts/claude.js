@@ -13,14 +13,25 @@ const SOURCE_EXTENSIONS = new Set([".html", ".htm", ".md"]);
 export async function discoverClaudeArtifacts(options = {}) {
   const home = options.home || process.env.CLAUDE_CONFIG_DIR || path.join(os.homedir(), ".claude");
   const projectsDir = path.join(home, "projects");
-  if (!exists(projectsDir)) return [];
+  if (!options.transcriptFiles && !exists(projectsDir)) return [];
 
-  const transcriptFiles = walkFiles(projectsDir, (_filePath, name) => name.endsWith(".jsonl"));
+  const transcriptFiles = options.transcriptFiles || walkFiles(projectsDir, (_filePath, name) => name.endsWith(".jsonl"));
   const versions = [];
-  for (const filePath of transcriptFiles) {
-    versions.push(...await parseClaudeArtifactTranscript(filePath, { home }));
+  for (const filePath of [...new Set(transcriptFiles)].sort()) {
+    versions.push(...await parseClaudeArtifactTranscript(filePath, { ...options, home }));
   }
   return groupArtifactVersions(versions, options.query);
+}
+
+export async function discoverClaudeSessionArtifacts(session, options = {}) {
+  if (session?.agent !== "claude" || !session.filePath) return [];
+  const transcriptFiles = [session.filePath];
+  const subagentsDir = path.join(path.dirname(session.filePath), session.id, "subagents");
+  if (exists(subagentsDir)) {
+    transcriptFiles.push(...walkFiles(subagentsDir, (_filePath, name) => name.endsWith(".jsonl")));
+  }
+  const artifacts = await discoverClaudeArtifacts({ ...options, transcriptFiles });
+  return artifacts.filter((artifact) => artifact.sessionIds.includes(session.id));
 }
 
 export async function parseClaudeArtifactTranscript(filePath, options = {}) {
@@ -361,12 +372,14 @@ function groupArtifactVersions(versions, query) {
       favicon: version.favicon,
       project: version.project,
       sourcePath: version.sourcePath,
+      sessionIds: [],
       versions: [],
     };
     group.url ||= version.url;
     group.title = version.title || group.title;
     group.description = version.description || group.description;
     group.favicon = version.favicon || group.favicon;
+    if (version.sessionId && !group.sessionIds.includes(version.sessionId)) group.sessionIds.push(version.sessionId);
     group.versions.push(version);
     groups.set(key, group);
   }

@@ -6,9 +6,10 @@ import pc from "picocolors";
 
 import { adapters, findAdapter, scanAgents } from "./agents/index.js";
 import { parseArgs } from "./args.js";
+import { discoverClaudeSessionArtifacts } from "./artifacts/claude.js";
 import { runArtifacts } from "./artifacts/cli.js";
+import { renderSessionWithArtifacts } from "./artifacts/session.js";
 import { loadConfig, saveConfig } from "./config.js";
-import { renderSessionBundle } from "./render.js";
 import { publishSession } from "./spacefast.js";
 
 const packageJson = JSON.parse(fs.readFileSync(new URL("../package.json", import.meta.url), "utf8"));
@@ -19,8 +20,12 @@ export async function run(argv = process.argv.slice(2), dependencies = {}) {
   if (parsed.options.help) return printHelp();
   if (parsed.options.version) return console.log(packageJson.version);
   const log = dependencies.log || console.log;
-
+  const env = dependencies.env || process.env;
   const interactive = Boolean(process.stdin.isTTY && process.stdout.isTTY && !parsed.options.json);
+  const warn = dependencies.warn || ((message) => {
+    if (interactive) prompts.log.warn(message);
+    else console.error(`Warning: ${message}`);
+  });
   if (!parsed.agent && !interactive) {
     throw new Error("Choose an agent in non-interactive mode, for example: npx push-session codex <session-id>");
   }
@@ -37,7 +42,18 @@ export async function run(argv = process.argv.slice(2), dependencies = {}) {
   const messages = await selection.adapter.load(selection.session);
   if (messages.length === 0) throw new Error("The selected session has no shareable messages.");
 
-  const bundle = renderSessionBundle(selection.session, messages);
+  let artifacts = [];
+  if (selection.adapter.id === "claude") {
+    try {
+      const discoverSessionArtifacts = dependencies.discoverSessionArtifacts || discoverClaudeSessionArtifacts;
+      artifacts = await discoverSessionArtifacts(selection.session, {
+        home: env.CLAUDE_CONFIG_DIR,
+      });
+    } catch (error) {
+      warn(`Could not recover this session's Claude artifacts: ${error.message}. Publishing the transcript without them.`);
+    }
+  }
+  const bundle = renderSessionWithArtifacts(selection.session, messages, artifacts);
   if (parsed.options.dryRun) {
     const result = {
       dryRun: true,
@@ -47,21 +63,18 @@ export async function run(argv = process.argv.slice(2), dependencies = {}) {
       messages: messages.length,
       bytes: bundle.totalBytes,
       pages: bundle.pageCount,
+      artifacts: bundle.artifactCount,
+      artifactVersions: bundle.artifactVersions,
       route: bundle.entryPath,
     };
     if (parsed.options.json) log(JSON.stringify(result));
     else {
-      prompts.note(`${result.messages} transcript entries\n${result.pages} JSON page${result.pages === 1 ? "" : "s"}\n${result.bytes.toLocaleString()} bytes\n${result.route}`, "Ready to publish");
+      prompts.note(`${result.messages} transcript entries\n${result.pages} JSON page${result.pages === 1 ? "" : "s"}\n${result.artifacts} artifact${result.artifacts === 1 ? "" : "s"}\n${result.bytes.toLocaleString()} bytes\n${result.route}`, "Ready to publish");
       prompts.outro("Dry run complete. Nothing was uploaded.");
     }
     return result;
   }
 
-  const env = dependencies.env || process.env;
-  const warn = dependencies.warn || ((message) => {
-    if (interactive) prompts.log.warn(message);
-    else console.error(`Warning: ${message}`);
-  });
   let config;
   try {
     config = loadConfig(env);
@@ -149,6 +162,8 @@ export async function run(argv = process.argv.slice(2), dependencies = {}) {
     url: result.shareUrl,
     landingUrl: result.landingUrl,
     pages: bundle.pageCount,
+    artifacts: bundle.artifactCount,
+    artifactVersions: bundle.artifactVersions,
     versionUrl: result.versionUrl,
     spaceId: result.space.id,
     claimUrl: result.space.claimUrl,

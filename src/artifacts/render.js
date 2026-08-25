@@ -4,14 +4,18 @@ import { artifactViewerScript, artifactViewerStyles } from "../artifact-viewer-a
 
 export function renderClaudeArtifactBundle(artifacts, options = {}) {
   const basePath = normalizePublishPath(options.basePath || "artifacts/claude");
+  const artifactDirectory = options.artifactDirectory === ""
+    ? ""
+    : normalizePublishPath(options.artifactDirectory || "artifacts");
   const files = [];
   const entries = [];
 
   for (const artifact of artifacts) {
     const recovered = artifact.versions.filter((version) => version.source);
     const latest = recovered.at(-1);
-    const artifactSegment = safeSegment(artifact.id);
-    const artifactBase = `${basePath}/artifacts/${artifactSegment}`;
+    const artifactSegment = artifactRouteSegment(artifact.id);
+    const artifactRoute = [artifactDirectory, artifactSegment].filter(Boolean).join("/");
+    const artifactBase = `${basePath}/${artifactRoute}`;
     const entry = {
       id: artifact.id,
       title: artifact.title,
@@ -24,7 +28,7 @@ export function renderClaudeArtifactBundle(artifacts, options = {}) {
       recoverableVersions: recovered.length,
       latestRecoveredVersion: latest?.version || null,
       latestPublishedAt: artifact.latest?.publishedAt || null,
-      route: latest ? `artifacts/${artifactSegment}/index.html` : null,
+      route: latest ? `${artifactRoute}/index.html` : null,
       versions: artifact.versions.map(versionMetadata),
     };
     entries.push(entry);
@@ -33,7 +37,7 @@ export function renderClaudeArtifactBundle(artifacts, options = {}) {
     files.push(...renderVersionFiles(artifact, latest, artifactBase));
     if (options.allVersions) {
       for (const version of recovered) {
-        const versionSegment = `${String(version.version).padStart(4, "0")}-${safeSegment(version.label || "publish")}`;
+        const versionSegment = artifactVersionSegment(version);
         files.push(...renderVersionFiles(artifact, version, `${artifactBase}/versions/${versionSegment}`));
       }
     }
@@ -167,12 +171,16 @@ function normalizePublishPath(value) {
   return normalized;
 }
 
-function safeSegment(value) {
+export function artifactRouteSegment(value) {
   return String(value || "artifact")
     .normalize("NFKD")
     .replace(/[^a-zA-Z0-9._-]+/g, "-")
     .replace(/^-+|-+$/g, "")
     .slice(0, 120) || "artifact";
+}
+
+export function artifactVersionSegment(version) {
+  return `${String(version.version).padStart(4, "0")}-${artifactRouteSegment(version.label || "publish")}`;
 }
 
 function escapeHtml(value) {
