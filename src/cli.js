@@ -6,6 +6,7 @@ import pc from "picocolors";
 
 import { adapters, findAdapter, scanAgents } from "./agents/index.js";
 import { parseArgs } from "./args.js";
+import { runArtifacts } from "./artifacts/cli.js";
 import { loadConfig, saveConfig } from "./config.js";
 import { renderSessionBundle } from "./render.js";
 import { publishSession } from "./spacefast.js";
@@ -13,6 +14,7 @@ import { publishSession } from "./spacefast.js";
 const packageJson = JSON.parse(fs.readFileSync(new URL("../package.json", import.meta.url), "utf8"));
 
 export async function run(argv = process.argv.slice(2), dependencies = {}) {
+  if (argv[0] === "artifacts") return runArtifacts(argv.slice(1), dependencies);
   const parsed = parseArgs(argv);
   if (parsed.options.help) return printHelp();
   if (parsed.options.version) return console.log(packageJson.version);
@@ -286,6 +288,7 @@ Usage
   npx push-session
   npx push-session <agent>
   npx push-session <agent> <session-id>
+  npx push-session artifacts <list|export|publish>
 
 Agents
   codex          OpenAI Codex CLI

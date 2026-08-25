@@ -7,6 +7,9 @@ links.
 npx push-session
 npx push-session claude
 npx push-session codex <session-id>
+npx push-session artifacts list
+npx push-session artifacts export --all
+npx push-session artifacts publish <artifact-id>
 ```
 
 It discovers local Codex, Claude Code, Gemini CLI, Cursor Agent, and Pi sessions,
@@ -26,6 +29,32 @@ view-only access link.
 
 Options: `--space <id>`, `--new-space`, `--limit <n>`, `--dry-run`, `--json`,
 and `--api-url <url>`.
+
+## Recover Claude Code artifacts
+
+Claude Code writes artifact sources to local HTML or Markdown files before it
+publishes them. The transcript retains the source path, publish URL, `Write` and
+`Edit` operations, and file-history references even after a temporary source
+file disappears. `push-session artifacts` rebuilds those sources and versions:
+
+```bash
+# Inventory every locally recorded Claude artifact and its recovery status.
+npx push-session artifacts list
+
+# Export a self-contained HTML gallery plus the original sources.
+npx push-session artifacts export --all --versions --output ./claude-artifacts
+
+# Republish one recovered artifact, or the complete gallery, through Spacefast.
+npx push-session artifacts publish <artifact-id>
+npx push-session artifacts publish --all --versions
+```
+
+`export` refuses a non-empty output directory unless `--force` is present.
+`publish --dry-run` reconstructs and renders without uploading. Artifact queries
+match the Claude artifact ID or URL, session ID, title, and source path.
+
+> Recovered artifacts can contain sensitive data. HTML artifacts are active
+> pages: opening or publishing one runs its scripts. Review sources first.
 
 The viewer directly vendors static components from MIT-licensed
 [T3 Code](https://github.com/pingdotgg/t3code); its license and attribution are

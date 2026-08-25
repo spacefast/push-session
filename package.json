@@ -13,6 +13,7 @@
     "bin",
     "scripts",
     "src",
+    "vendor/artifact-viewer",
     "vendor/t3code-viewer",
     "README.md",
     "LICENSE"

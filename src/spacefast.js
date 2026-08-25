@@ -24,7 +24,7 @@ export async function publishSession(input) {
   const publishPayload = {
     ...(requestedSpace && { spaceId: requestedSpace }),
     publishMode: "additive",
-    ...(!requestedSpace && { space: { title: "Shared AI sessions" } }),
+    ...(!requestedSpace && { space: { title: input.spaceTitle || "Shared AI sessions" } }),
   };
   const inline = totalFileBytes(files) <= (input.inlineLimitBytes ?? DEFAULT_INLINE_LIMIT);
   let initial;
@@ -77,6 +77,7 @@ export async function publishSession(input) {
     entryPath,
     basePath,
     title: input.session?.title,
+    shareName: input.shareName,
   });
   const liveUrl = space.liveUrl || initialData?.space?.liveUrl || null;
   const landingUrl = liveUrl ? new URL(entryPath, ensureTrailingSlash(liveUrl)).href : null;
@@ -184,7 +185,7 @@ async function uploadTargets({ targets, files, apiUrl, fetchImpl }) {
   }
 }
 
-async function createScopedShareLink({ apiUrl, bearerToken, fetchImpl, spaceId, entryPath, basePath, title }) {
+async function createScopedShareLink({ apiUrl, bearerToken, fetchImpl, spaceId, entryPath, basePath, title, shareName }) {
   if (!bearerToken) throw new Error("Spacefast published the session but did not return authority to create its private share link.");
   const response = await fetchImpl(`${apiUrl}/v1/spaces/${encodeURIComponent(spaceId)}/share-links`, {
     method: "POST",
@@ -193,7 +194,7 @@ async function createScopedShareLink({ apiUrl, bearerToken, fetchImpl, spaceId, 
       "content-type": "application/json",
     },
     body: JSON.stringify({
-      name: `Session: ${String(title || "Shared AI session").slice(0, 180)}`,
+      name: String(shareName || `Session: ${title || "Shared AI session"}`).slice(0, 180),
       landingPath: `/${basePath}`,
       resources: { include: [`/${basePath}`, `/${basePath}/**`] },
       capabilities: ["page.view"],

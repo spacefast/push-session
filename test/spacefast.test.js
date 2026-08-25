@@ -165,6 +165,37 @@ test("switches giant sessions to manifest uploads and follows upload receipts", 
   assert.equal(result.shareUrl, "https://big.example/__/link");
 });
 
+test("accepts artifact-specific space and share names", async () => {
+  const requests = [];
+  const fetchImpl = async (url, init) => {
+    requests.push({ url: String(url), init });
+    if (String(url).endsWith("/share-links")) {
+      return jsonResponse(201, { data: { url: "https://example.test/private" } });
+    }
+    return jsonResponse(201, {
+      data: {
+        space: { id: "spc_artifacts", liveUrl: "https://example.test/" },
+        claim: { key: "claim-key" },
+        next: { action: "done" },
+      },
+    });
+  };
+  await publishSession({
+    session: { id: "artifact", title: "Artifact title" },
+    files: [{ path: "artifacts/one/index.html", content: "<h1>One</h1>" }],
+    entryPath: "artifacts/one/index.html",
+    basePath: "artifacts/one",
+    spaceTitle: "Shared AI artifacts",
+    shareName: "Claude artifact: One",
+    fetchImpl,
+  });
+
+  const publishPayload = JSON.parse(requests[0].init.body.get("payload"));
+  assert.equal(publishPayload.space.title, "Shared AI artifacts");
+  const sharePayload = JSON.parse(requests[1].init.body);
+  assert.equal(sharePayload.name, "Claude artifact: One");
+});
+
 function jsonResponse(status, body) {
   return new Response(JSON.stringify(body), {
     status,
