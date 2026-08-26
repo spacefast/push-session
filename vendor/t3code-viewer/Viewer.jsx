@@ -33,15 +33,17 @@ function Timeline({ messages }) {
 function ArtifactShelf({ artifacts }) {
   if (!artifacts?.length) return null;
   return (
-    <section className="artifact-shelf" aria-label="Session artifacts">
-      <div className="artifact-shelf-title">Artifacts</div>
+    <section className="artifact-shelf" aria-label="Session outputs">
+      <div className="artifact-shelf-title">Session outputs</div>
       <div className="artifact-cards">
         {artifacts.map((artifact) => (
           <a className="artifact-card" href={artifact.href} target="_blank" rel="noreferrer" key={artifact.id}>
             <span className="artifact-icon">{artifact.favicon || "◇"}</span>
             <span className="artifact-card-copy">
-              <strong>{artifact.title || "Claude artifact"}</strong>
-              <small>{artifact.recoveredVersions} recovered version{artifact.recoveredVersions === 1 ? "" : "s"}</small>
+              <strong>{artifact.title || (artifact.kind === "chatgpt-site" ? "ChatGPT Site" : "Claude artifact")}</strong>
+              <small>{artifact.kind === "chatgpt-site"
+                ? `${artifact.publishes} saved version${artifact.publishes === 1 ? "" : "s"} · ${artifact.recoveredVersions} recovered`
+                : `${artifact.recoveredVersions} recovered version${artifact.recoveredVersions === 1 ? "" : "s"}`}</small>
             </span>
             <span className="artifact-arrow" aria-hidden="true">↗</span>
           </a>
@@ -64,7 +66,7 @@ function SessionHeader({ session, stats, artifacts }) {
         {session.createdAt ? <span><Icon name="calendar" />{longTimestamp(session.createdAt)}</span> : null}
         <span><Icon name="message" />{stats.messages} messages</span>
         <span><Icon name="terminal" />{stats.tools} tool calls</span>
-        {stats.artifacts ? <span><Icon name="file" />{stats.artifacts} artifact{stats.artifacts === 1 ? "" : "s"}</span> : null}
+        {stats.artifacts ? <span><Icon name="file" />{stats.artifacts} session output{stats.artifacts === 1 ? "" : "s"}</span> : null}
         <span title={session.threadId}><Icon name="hash" />{shortId(session.threadId)}</span>
       </div>
       <ArtifactShelf artifacts={artifacts} />

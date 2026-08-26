@@ -158,6 +158,61 @@ test("uploads recovered artifacts with their Claude session", async (context) =>
   assert.ok(uploadedPaths.includes(`sessions/session-one/artifacts/${artifactId}/versions/0001-first/index.html`));
 });
 
+test("uploads recovered ChatGPT Sites with their Codex session", async (context) => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "push-session-chatgpt-sites-"));
+  context.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const env = { PUSH_SESSION_CONFIG: path.join(root, "config.json") };
+  const uploadedPaths = [];
+  const fetchImpl = async (url, init) => {
+    if (String(url).endsWith("/share-links")) return jsonResponse(201, { data: { url: "https://sessions.example/__/with-site" } });
+    uploadedPaths.push(...init.body.getAll("files").map((file) => file.name));
+    return jsonResponse(201, {
+      data: {
+        space: { id: "spc_site_session", liveUrl: "https://sessions.example/" },
+        claim: { key: "site-session-key" },
+        next: { action: "done" },
+      },
+    });
+  };
+  const site = {
+    id: "appgprj_testsite123",
+    projectId: "appgprj_testsite123",
+    title: "Session Site",
+    slug: "session-site",
+    url: "https://session-site.example.test/",
+    callIds: ["save-site"],
+    recoverableVersions: 1,
+    versions: [{
+      id: "ver_1",
+      number: 1,
+      commitSha: "abc123",
+      callIds: ["save-site"],
+      liveUrl: "https://session-site.example.test/",
+      source: {
+        recoveredFrom: "git-commit",
+        files: [{ path: "app/page.tsx", content: Buffer.from("export default function Page() {}"), bytes: 33, sha256: "hash", contentType: "text/plain; charset=utf-8" }],
+        omittedFiles: [],
+        archive: null,
+      },
+    }],
+  };
+
+  const result = await run(["codex", "session-one", "--json"], {
+    adapters: [fakeAdapter("codex", [{ role: "tool", id: "save-site", name: "save_site_version", output: "Saved" }])],
+    discoverSessionSites: async () => [site],
+    env,
+    fetchImpl,
+    log: () => {},
+    warn: () => {},
+  });
+
+  assert.equal(result.sites, 1);
+  assert.equal(result.siteVersions, 1);
+  assert.equal(result.recoveredSiteVersions, 1);
+  assert.ok(uploadedPaths.includes("sessions/session-one/sites/appgprj_testsite123/index.html"));
+  assert.ok(uploadedPaths.includes("sessions/session-one/sites/appgprj_testsite123/versions/0001-1/source/app/page.tsx"));
+});
+
 function fakeAdapter(id = "codex", messages = [{ role: "assistant", content: "Done" }]) {
   const session = {
     agent: id,

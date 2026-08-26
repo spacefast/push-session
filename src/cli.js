@@ -9,6 +9,7 @@ import { parseArgs } from "./args.js";
 import { discoverClaudeSessionArtifacts } from "./artifacts/claude.js";
 import { runArtifacts } from "./artifacts/cli.js";
 import { renderSessionWithArtifacts } from "./artifacts/session.js";
+import { discoverCodexSessionSites } from "./artifacts/sites.js";
 import { loadConfig, saveConfig } from "./config.js";
 import { publishSession } from "./spacefast.js";
 
@@ -43,6 +44,7 @@ export async function run(argv = process.argv.slice(2), dependencies = {}) {
   if (messages.length === 0) throw new Error("The selected session has no shareable messages.");
 
   let artifacts = [];
+  let sites = [];
   if (selection.adapter.id === "claude") {
     try {
       const discoverSessionArtifacts = dependencies.discoverSessionArtifacts || discoverClaudeSessionArtifacts;
@@ -53,7 +55,15 @@ export async function run(argv = process.argv.slice(2), dependencies = {}) {
       warn(`Could not recover this session's Claude artifacts: ${error.message}. Publishing the transcript without them.`);
     }
   }
-  const bundle = renderSessionWithArtifacts(selection.session, messages, artifacts);
+  if (selection.adapter.id === "codex") {
+    try {
+      const discoverSessionSites = dependencies.discoverSessionSites || discoverCodexSessionSites;
+      sites = await discoverSessionSites(selection.session);
+    } catch (error) {
+      warn(`Could not recover this session's ChatGPT Sites: ${error.message}. Publishing the transcript without them.`);
+    }
+  }
+  const bundle = renderSessionWithArtifacts(selection.session, messages, artifacts, { sites });
   if (parsed.options.dryRun) {
     const result = {
       dryRun: true,
@@ -65,11 +75,14 @@ export async function run(argv = process.argv.slice(2), dependencies = {}) {
       pages: bundle.pageCount,
       artifacts: bundle.artifactCount,
       artifactVersions: bundle.artifactVersions,
+      sites: bundle.siteCount,
+      siteVersions: bundle.siteVersions,
+      recoveredSiteVersions: bundle.recoveredSiteVersions,
       route: bundle.entryPath,
     };
     if (parsed.options.json) log(JSON.stringify(result));
     else {
-      prompts.note(`${result.messages} transcript entries\n${result.pages} JSON page${result.pages === 1 ? "" : "s"}\n${result.artifacts} artifact${result.artifacts === 1 ? "" : "s"}\n${result.bytes.toLocaleString()} bytes\n${result.route}`, "Ready to publish");
+      prompts.note(`${result.messages} transcript entries\n${result.pages} JSON page${result.pages === 1 ? "" : "s"}\n${result.artifacts} Claude artifact${result.artifacts === 1 ? "" : "s"}\n${result.sites} ChatGPT Site${result.sites === 1 ? "" : "s"}\n${result.bytes.toLocaleString()} bytes\n${result.route}`, "Ready to publish");
       prompts.outro("Dry run complete. Nothing was uploaded.");
     }
     return result;
@@ -164,6 +177,9 @@ export async function run(argv = process.argv.slice(2), dependencies = {}) {
     pages: bundle.pageCount,
     artifacts: bundle.artifactCount,
     artifactVersions: bundle.artifactVersions,
+    sites: bundle.siteCount,
+    siteVersions: bundle.siteVersions,
+    recoveredSiteVersions: bundle.recoveredSiteVersions,
     versionUrl: result.versionUrl,
     spaceId: result.space.id,
     claimUrl: result.space.claimUrl,

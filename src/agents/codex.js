@@ -111,6 +111,7 @@ function parseCodexMessages(filePath) {
       const input = args ? parseMaybeJson(args) : undefined;
       const tool = {
         role: "tool",
+        id: payload.call_id,
         name,
         input,
         summary: toolSummary(name, input),

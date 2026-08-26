@@ -25,7 +25,11 @@ calls. Each share uses the session ID as its route and a scoped, unguessable
 view-only access link. Claude sessions also recover and upload their published
 HTML or Markdown artifacts automatically. The session page links each artifact,
 and transcript references point at the recovered copy inside the same private
-Spacefast share.
+Spacefast share. Codex sessions do the same for ChatGPT Sites: `push-session`
+attaches a browsable snapshot of the exact recorded Git commit and, when it is
+still present locally, the original Sites deployment package. It keeps the real
+live Sites URL as the application link because a Sites Worker build is not a
+static HTML site.
 
 > Sessions may contain code, file paths, commands, or secrets. Review before
 > sharing. Anyone with the generated link can view it.
@@ -58,6 +62,22 @@ match the Claude artifact ID or URL, session ID, title, and source path.
 
 > Recovered artifacts can contain sensitive data. HTML artifacts are active
 > pages: opening or publishing one runs its scripts. Review sources first.
+
+## Recover ChatGPT Sites
+
+No separate command is needed. Publish the Codex session that created or
+updated the Site:
+
+```bash
+npx push-session codex <session-id>
+```
+
+The exporter reads recorded Sites save and deploy calls, finds the matching
+`.openai/hosting.json` at the saved Git commit, and uploads that Site source
+under the session route. Tracked environment files, private keys, credential
+files, oversized files, and files beyond the recovery size limit are omitted
+and listed on the version page. If the original temporary deployment archive
+still exists, the version page includes it as a download.
 
 The viewer directly vendors static components from MIT-licensed
 [T3 Code](https://github.com/pingdotgg/t3code); its license and attribution are
