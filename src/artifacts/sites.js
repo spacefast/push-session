@@ -242,7 +242,7 @@ function coalesceVersions(versions) {
 }
 
 function recoverVersionSource(site, version, session, options) {
-  const archive = recoverArchive(version.archivePath, options);
+  const archive = recoverArchive(version.archivePath, site.projectId, options);
   const commit = version.commitSha ? recoverGitCommit(site, version.commitSha, session, options) : null;
   if (!archive && !commit) return null;
   return {
@@ -255,20 +255,23 @@ function recoverVersionSource(site, version, session, options) {
   };
 }
 
-function recoverArchive(archivePath, options) {
+function recoverArchive(archivePath, projectId, options) {
   if (!archivePath || !fs.existsSync(archivePath)) return null;
-  const stats = fs.statSync(archivePath);
+  const stats = fs.lstatSync(archivePath);
   const maxBytes = options.maxArchiveBytes || MAX_ARCHIVE_BYTES;
   if (!stats.isFile() || stats.size > maxBytes) return null;
   const content = fs.readFileSync(archivePath);
   if (content[0] !== 0x1f || content[1] !== 0x8b) return null;
   let entries;
   try {
-    entries = tarEntryNames(gunzipSync(content, { maxOutputLength: Math.max(maxBytes * 4, 256 * 1024 * 1024) }));
+    entries = tarEntries(gunzipSync(content, { maxOutputLength: Math.max(maxBytes * 4, 256 * 1024 * 1024) }));
   } catch {
     return null;
   }
-  if (!entries.has("dist/server/index.js") || !entries.has("dist/.openai/hosting.json")) return null;
+  if (!entries.has("dist/server/index.js") || [...entries.keys()].some(isSensitivePath)) return null;
+  let hosting;
+  try { hosting = JSON.parse(entries.get("dist/.openai/hosting.json")?.toString("utf8")); } catch { return null; }
+  if (hosting?.project_id !== projectId) return null;
   return {
     name: "deployment.tar.gz",
     bytes: stats.size,
@@ -276,8 +279,8 @@ function recoverArchive(archivePath, options) {
   };
 }
 
-function tarEntryNames(buffer) {
-  const names = new Set();
+function tarEntries(buffer) {
+  const entries = new Map();
   for (let offset = 0; offset + 512 <= buffer.length;) {
     const header = buffer.subarray(offset, offset + 512);
     if (header.every((byte) => byte === 0)) break;
@@ -285,10 +288,13 @@ function tarEntryNames(buffer) {
     const prefix = nullTerminated(header.subarray(345, 500));
     const size = Number.parseInt(nullTerminated(header.subarray(124, 136)).trim() || "0", 8);
     if (!Number.isFinite(size) || size < 0) throw new Error("Invalid tar entry size");
-    names.add(prefix ? `${prefix}/${name}` : name);
+    if (offset + 512 + size > buffer.length) throw new Error("Truncated tar entry");
+    if (header[156] === 0 || header[156] === 48) {
+      entries.set(prefix ? `${prefix}/${name}` : name, buffer.subarray(offset + 512, offset + 512 + size));
+    }
     offset += 512 + Math.ceil(size / 512) * 512;
   }
-  return names;
+  return entries;
 }
 
 function nullTerminated(buffer) {
@@ -297,6 +303,7 @@ function nullTerminated(buffer) {
 }
 
 function recoverGitCommit(site, commitSha, session, options) {
+  if (!/^[a-f0-9]{40}$/i.test(commitSha)) return null;
   const runGit = options.execFileSync || execFile;
   const project = options.project || session.project;
   if (!project || !fs.existsSync(project)) return null;
@@ -380,6 +387,7 @@ function safeSourcePath(value) {
 function isSensitivePath(value) {
   const lower = String(value).toLowerCase();
   const basename = path.posix.basename(lower);
+  if (lower.split("/").some((segment) => [".ssh", ".aws", ".kube", ".azure", ".gcloud", ".config"].includes(segment))) return true;
   if (basename === ".env.example" || basename === ".env.sample") return false;
   return basename === ".env" || basename.startsWith(".env.") ||
     ["credentials", "credentials.json", "id_rsa", "id_ed25519", ".npmrc", ".pypirc"].includes(basename) ||

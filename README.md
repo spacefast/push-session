@@ -19,6 +19,9 @@ that space from any working directory without adding project-local state. If
 saved implicit state can no longer authorize the space, publishing continues in
 a replacement space; an explicit `--space <id>` remains strict. Claim the space
 to keep using it, or set `SPACEFAST_TOKEN` for owned publishing.
+Publishing once with `--space` keeps the saved default space. An `--api-url`
+override uses separate API state and keeps the saved default unless you also
+pass `--new-space` to make the new space your default.
 
 Sessions render as paginated, read-only transcripts with Markdown and tool
 calls. Each share uses the session ID as its route and a scoped, unguessable
@@ -56,7 +59,9 @@ npx push-session artifacts publish <artifact-id>
 npx push-session artifacts publish --all --versions
 ```
 
-`export` refuses a non-empty output directory unless `--force` is present.
+`export` refuses a non-empty output directory unless `--force` is present,
+and refuses to write through symlinks even with `--force`. New export files
+and directories are private to the current user by default.
 `publish --dry-run` reconstructs and renders without uploading. Artifact queries
 match the Claude artifact ID or URL, session ID, title, and source path.
 
@@ -78,6 +83,9 @@ under the session route. Tracked environment files, private keys, credential
 files, oversized files, and files beyond the recovery size limit are omitted
 and listed on the version page. If the original temporary deployment archive
 still exists, the version page includes it as a download.
+Archives that belong to a different Site or contain files with sensitive
+names are left out. Review the transcript, source, and any remaining archive
+before sharing; embedded secrets in code cannot be detected reliably.
 
 The viewer directly vendors static components from MIT-licensed
 [T3 Code](https://github.com/pingdotgg/t3code); its license and attribution are

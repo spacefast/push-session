@@ -22,6 +22,17 @@ test("prints each share URL on its own unbroken output line", () => {
   assert.match(output, /Access\n/);
 });
 
+test("explicit session lookup checks every matching ID despite the picker limit", async () => {
+  const adapter = fakeAdapter();
+  const first = adapter.discover()[0];
+  adapter.discover = ({ limit }) => limit === Infinity
+    ? [first, { ...first, id: "session-two" }]
+    : [first];
+  await assert.rejects(run(["codex", "session", "--limit", "1", "--dry-run", "--json"], {
+    adapters: [adapter],
+  }), /ambiguous \(2 matches\)/);
+});
+
 test("reuses the first global session space on later runs", async (context) => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "push-session-global-"));
   context.after(() => fs.rmSync(root, { recursive: true, force: true }));
@@ -91,6 +102,33 @@ test("replaces rejected implicit global state without blocking the publish", asy
   assert.equal(loadConfig(env).space.id, "spc_replacement");
   assert.equal(loadConfig(env).space.claimToken, "replacement-key");
   assert.match(warnings[0], /no longer reusable/);
+});
+
+test("one-off space and alternate API publishes preserve the saved global space", async (context) => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "push-session-one-off-"));
+  context.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const env = { PUSH_SESSION_CONFIG: path.join(root, "config.json"), SPACEFAST_TOKEN: "owned-token" };
+  saveConfig({ version: 1, space: { id: "spc_global", claimToken: "global-key" } }, env);
+  const requests = [];
+  const fetchImpl = async (url, init) => {
+    if (String(url).endsWith("/share-links")) return jsonResponse(201, { data: { url: "https://sessions.example/private" } });
+    requests.push({ url: String(url), payload: JSON.parse(init.body.get("payload")) });
+    return jsonResponse(201, {
+      data: {
+        space: { id: requests.length === 1 ? "spc_other" : "spc_alt", liveUrl: "https://sessions.example/" },
+        claim: { key: "new-key" },
+        next: { action: "done" },
+      },
+    });
+  };
+  const dependencies = { adapters: [fakeAdapter()], env, fetchImpl, log: () => {} };
+  await run(["codex", "session-one", "--json", "--space", "spc_other"], dependencies);
+  await run(["codex", "session-one", "--json", "--api-url", "https://alternate.example/"], dependencies);
+
+  assert.equal(requests[0].payload.spaceId, "spc_other");
+  assert.equal(requests[1].url, "https://alternate.example/v1/publish?wait=1");
+  assert.equal(requests[1].payload.spaceId, undefined);
+  assert.deepEqual(loadConfig(env).space, { id: "spc_global", claimToken: "global-key" });
 });
 
 test("uploads recovered artifacts with their Claude session", async (context) => {

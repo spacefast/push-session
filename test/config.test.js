@@ -22,4 +22,7 @@ test("stores reusable session-space credentials in one user-global config", (con
     accessToken: "continued-access",
   });
   assert.equal(fs.statSync(configPath(env)).mode & 0o777, 0o600);
+
+  fs.writeFileSync(configPath(env), JSON.stringify({ apiUrl: "file:///tmp/other", space: { id: "spc_global" } }));
+  assert.throws(() => loadConfig(env), /HTTP\(S\) origin/);
 });

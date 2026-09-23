@@ -1,8 +1,8 @@
 const VALUE_FLAGS = new Set(["--space", "--api-url", "--limit"]);
 
-export function parseArgs(argv) {
+export function parseArgs(argv, env = process.env) {
   const options = {
-    apiUrl: process.env.SPACEFAST_API_URL,
+    apiUrl: env.SPACEFAST_API_URL,
     dryRun: false,
     help: false,
     json: false,
@@ -49,17 +49,29 @@ export function parseArgs(argv) {
     throw new Error("--new-space and --space cannot be used together.");
   }
 
+  if (options.apiUrl) options.apiUrl = apiOrigin(options.apiUrl);
+
   return { agent: positionals[0], sessionId: positionals[1], options };
 }
 
 function assignValue(options, flag, value) {
+  if (!value) throw new Error(`${flag} requires a value.`);
   if (flag === "--space") options.space = value;
-  if (flag === "--api-url") options.apiUrl = value.replace(/\/$/, "");
+  if (flag === "--api-url") options.apiUrl = value;
   if (flag === "--limit") {
-    const limit = Number.parseInt(value, 10);
-    if (!Number.isInteger(limit) || limit < 1 || limit > 500) {
+    const limit = Number(value);
+    if (!/^\d+$/.test(value) || !Number.isInteger(limit) || limit < 1 || limit > 500) {
       throw new Error("--limit must be an integer between 1 and 500.");
     }
     options.limit = limit;
   }
+}
+
+export function apiOrigin(value) {
+  let url;
+  try { url = new URL(value); } catch { /* handled below */ }
+  if (!url || !["http:", "https:"].includes(url.protocol) || url.username || url.password || url.search || url.hash || url.pathname !== "/") {
+    throw new Error("--api-url must be an HTTP(S) origin without a path, query, or credentials.");
+  }
+  return url.origin;
 }

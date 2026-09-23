@@ -165,7 +165,7 @@ function sourceContentType(extension) {
 
 function normalizePublishPath(value) {
   const normalized = String(value || "").replaceAll("\\", "/").replace(/^\/+|\/+$/g, "");
-  if (!normalized || normalized.split("/").some((segment) => segment === "..")) {
+  if (!normalized || normalized.split("/").some((segment) => !segment || segment === "." || segment === "..")) {
     throw new Error(`Invalid artifact export path: ${value}`);
   }
   return normalized;
@@ -176,7 +176,7 @@ export function artifactRouteSegment(value) {
     .normalize("NFKD")
     .replace(/[^a-zA-Z0-9._-]+/g, "-")
     .replace(/^-+|-+$/g, "")
-    .slice(0, 120) || "artifact";
+    .slice(0, 120).replace(/^\.{1,2}$/, "") || "artifact";
 }
 
 export function artifactVersionSegment(version) {

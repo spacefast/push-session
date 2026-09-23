@@ -96,20 +96,21 @@ function inspectPiSession(filePath) {
   const header = entries[0];
   if (header?.type !== "session") return null;
 
+  const branch = activePiBranch(entries);
   let name;
   let firstMessage;
   let messageCount = 0;
   let lastActivity;
-  for (const entry of entries.slice(1)) {
+  for (const entry of branch) {
+    const activity = timestamp(entry.timestamp);
+    if (activity !== null) lastActivity = Math.max(lastActivity || 0, activity);
     if (entry.type === "session_info") name = cleanTitle(entry.name) || undefined;
     if (entry.type !== "message") continue;
-    messageCount += 1;
     const message = entry.message;
     if (message?.role !== "user" && message?.role !== "assistant") continue;
+    messageCount += 1;
     const text = contentText(message.content, TEXT_TYPES);
     if (!firstMessage && message.role === "user" && text && !isBootstrapMessage(text)) firstMessage = cleanTitle(text);
-    const activity = timestamp(message.timestamp ?? entry.timestamp);
-    if (activity !== null) lastActivity = Math.max(lastActivity || 0, activity);
   }
 
   const stats = fileStats(filePath);

@@ -114,6 +114,24 @@ test("renders HTML unchanged and Markdown as a self-contained HTML page", (conte
   assert.equal(fs.readFileSync(path.join(output, "artifacts", artifact.id, "index.html"), "utf8"), "<!doctype html><h1>Latest</h1>");
 });
 
+test("export refuses symlinked paths even with --force", (context) => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "push-session-export-links-"));
+  context.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const output = path.join(root, "output");
+  const elsewhere = path.join(root, "elsewhere");
+  fs.mkdirSync(output);
+  fs.mkdirSync(elsewhere);
+  fs.symlinkSync(elsewhere, path.join(output, "artifacts"));
+  const bundle = { basePath: "export", files: [{ path: "export/artifacts/index.html", content: "private" }] };
+  assert.throws(() => writeArtifactBundle(bundle, output, { force: true }), /non-directory/);
+  assert.deepEqual(fs.readdirSync(elsewhere), []);
+
+  fs.unlinkSync(path.join(output, "artifacts"));
+  fs.symlinkSync(path.join(elsewhere, "target.html"), path.join(output, "index.html"));
+  assert.throws(() => writeArtifactBundle({ basePath: "export", files: [{ path: "export/index.html", content: "private" }] }, output, { force: true }));
+  assert.deepEqual(fs.readdirSync(elsewhere), []);
+});
+
 test("parses artifact commands independently from session sharing", () => {
   const parsed = parseArtifactArgs(["export", "artifact-id", "--versions", "--output", "./out"]);
   assert.equal(parsed.command, "export");

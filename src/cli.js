@@ -1,4 +1,3 @@
-import fs from "node:fs";
 import os from "node:os";
 
 import * as prompts from "@clack/prompts";
@@ -10,16 +9,15 @@ import { discoverClaudeSessionArtifacts } from "./artifacts/claude.js";
 import { runArtifacts } from "./artifacts/cli.js";
 import { renderSessionWithArtifacts } from "./artifacts/session.js";
 import { discoverCodexSessionSites } from "./artifacts/sites.js";
-import { loadConfig, saveConfig } from "./config.js";
+import { loadConfig, rememberPublishResult, selectPublishState } from "./config.js";
 import { publishSession } from "./spacefast.js";
-
-const packageJson = JSON.parse(fs.readFileSync(new URL("../package.json", import.meta.url), "utf8"));
+import { packageVersion } from "./version.js";
 
 export async function run(argv = process.argv.slice(2), dependencies = {}) {
   if (argv[0] === "artifacts") return runArtifacts(argv.slice(1), dependencies);
-  const parsed = parseArgs(argv);
+  const parsed = parseArgs(argv, dependencies.env || process.env);
   if (parsed.options.help) return printHelp();
-  if (parsed.options.version) return console.log(packageJson.version);
+  if (parsed.options.version) return console.log(packageVersion);
   const log = dependencies.log || console.log;
   const env = dependencies.env || process.env;
   const interactive = Boolean(process.stdin.isTTY && process.stdout.isTTY && !parsed.options.json);
@@ -95,23 +93,16 @@ export async function run(argv = process.argv.slice(2), dependencies = {}) {
     warn(`${error.message} Publishing without saved state.`);
     config = { version: 1 };
   }
-  const configuredSpace = parsed.options.newSpace ? null : parsed.options.space || config.space?.id || null;
-  const reusingGlobalSpace = Boolean(!parsed.options.newSpace && !parsed.options.space && config.space?.id);
-  const configuredClaim = configuredSpace === config.space?.id ? config.space?.claimToken : null;
-  const savedAccessToken = configuredSpace === config.space?.id ? config.space?.accessToken : null;
-  const accessToken = env.SPACEFAST_TOKEN || savedAccessToken || null;
-  if (parsed.options.space && !accessToken && !configuredClaim) {
-    throw new Error("Publishing to --space requires SPACEFAST_TOKEN unless it is the saved anonymous space.");
-  }
+  const state = selectPublishState(config, parsed.options, env);
 
   const spinner = interactive ? prompts.spinner() : null;
-  spinner?.start(configuredSpace ? "Publishing to your session space" : "Creating your session space");
+  spinner?.start(state.spaceId ? "Publishing to your session space" : "Creating your session space");
   const publish = ({ spaceId, accessToken: publishAccessToken, claimToken }) => publishSession({
     session: selection.session,
     files: bundle.files,
     entryPath: bundle.entryPath,
     basePath: bundle.basePath,
-    apiUrl: parsed.options.apiUrl || config.apiUrl,
+    apiUrl: state.apiUrl,
     spaceId,
     accessToken: publishAccessToken,
     claimToken,
@@ -120,13 +111,13 @@ export async function run(argv = process.argv.slice(2), dependencies = {}) {
   let result;
   try {
     result = await publish({
-      spaceId: configuredSpace,
-      accessToken,
-      claimToken: configuredClaim,
+      spaceId: state.spaceId,
+      accessToken: state.accessToken,
+      claimToken: state.claimToken,
     });
     spinner?.stop("Session published");
   } catch (error) {
-    if (!reusingGlobalSpace || !canReplaceSavedSpace(error)) {
+    if (!state.reusingGlobalSpace || !canReplaceSavedSpace(error)) {
       spinner?.stop("Publish failed");
       throw error;
     }
@@ -147,23 +138,7 @@ export async function run(argv = process.argv.slice(2), dependencies = {}) {
   }
 
   try {
-    const continuingSavedAccess = result.space.id === config.space?.id ? savedAccessToken : null;
-    const persistedAccessToken = result.credential?.accessToken || continuingSavedAccess || undefined;
-    saveConfig(
-      {
-        version: 1,
-        apiUrl: parsed.options.apiUrl || config.apiUrl,
-        space: {
-          id: result.space.id,
-          liveUrl: result.space.liveUrl,
-          accessToken: persistedAccessToken,
-          claimToken: persistedAccessToken ? undefined : result.space.claimToken,
-          claimUrl: result.space.claimUrl,
-          expiresAt: result.space.expiresAt,
-        },
-      },
-      env,
-    );
+    rememberPublishResult(config, state, result, env);
   } catch (error) {
     warn(`${error.message} This publish succeeded, but global space reuse could not be saved.`);
   }
@@ -238,7 +213,7 @@ async function selectAgentAndSession({ requestedAgent, requestedSession, interac
     sessions = selected.sessions;
   } else {
     if (!adapter.installed()) throw new Error(`${adapter.label} does not appear to be installed.`);
-    sessions = adapter.discover({ limit, query: requestedSession });
+    sessions = adapter.discover({ limit: requestedSession ? Infinity : limit, query: requestedSession });
   }
 
   if (sessions.length === 0) throw new Error(`No ${adapter.label} sessions were found.`);
@@ -311,7 +286,7 @@ function formatDate(value) {
 }
 
 function printHelp() {
-  console.log(`push-session ${packageJson.version}
+  console.log(`push-session ${packageVersion}
 
 Share local AI coding-agent sessions through Spacefast.
 

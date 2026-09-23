@@ -16,10 +16,12 @@ test("recovers the exact ChatGPT Sites commit and deployment package from a Code
   const transcript = path.join(root, "session.jsonl");
   const archive = path.join(root, "site-build.tar.gz");
   fs.mkdirSync(path.join(root, ".openai"));
+  fs.mkdirSync(path.join(root, ".aws"));
   fs.mkdirSync(path.join(root, "app"));
   fs.writeFileSync(path.join(root, ".openai", "hosting.json"), JSON.stringify({ project_id: projectId }));
   fs.writeFileSync(path.join(root, "app", "page.tsx"), "export default function Page() { return <h1>Recorded Site</h1>; }\n");
   fs.writeFileSync(path.join(root, ".env"), "PRIVATE_TOKEN=do-not-upload\n");
+  fs.writeFileSync(path.join(root, ".aws", "config"), "private profile\n");
   const archiveContent = siteArchive();
   fs.writeFileSync(archive, archiveContent);
   git(root, ["init", "-b", "main"]);
@@ -36,6 +38,7 @@ test("recovers the exact ChatGPT Sites commit and deployment package from a Code
   assert.equal(sites[0].recoverableVersions, 1);
   assert.ok(sites[0].versions[0].source.files.some((file) => file.path === "app/page.tsx" && file.content.toString().includes("Recorded Site")));
   assert.ok(sites[0].versions[0].source.omittedFiles.includes(".env"));
+  assert.ok(sites[0].versions[0].source.omittedFiles.includes(".aws/config"));
   assert.deepEqual(sites[0].versions[0].source.archive.content, archiveContent);
 
   const bundle = renderSessionWithArtifacts(
@@ -61,6 +64,15 @@ test("recovers the exact ChatGPT Sites commit and deployment package from a Code
   const events = bundle.files.filter((file) => file.path.includes("/pages/")).flatMap((file) => JSON.parse(file.content).events);
   assert.equal(events[0].payload.data.artifact.href, `sites/${projectId}/versions/0007-7/index.html`);
   assert.match(events[1].payload.detail, /https:\/\/recorded-site\.example\.test/);
+
+  fs.writeFileSync(archive, siteArchive([["dist/.env", Buffer.from("PRIVATE_TOKEN=do-not-upload\n")]]));
+  const [unsafe] = discoverCodexSessionSites({ filePath: transcript, project: root });
+  assert.equal(unsafe.versions[0].source.archive, null);
+  assert.equal(unsafe.versions[0].source.files.some((file) => file.path === "app/page.tsx"), true);
+
+  fs.writeFileSync(archive, siteArchive([["dist/.openai/hosting.json", Buffer.from('{"project_id":"appgprj_other"}')]]));
+  const [unrelated] = discoverCodexSessionSites({ filePath: transcript, project: root });
+  assert.equal(unrelated.versions[0].source.archive, null);
 });
 
 test("recognizes Sites calls made through the Codex exec orchestrator", (context) => {
@@ -176,10 +188,11 @@ function payloadFromHtml(html) {
   return JSON.parse(payload);
 }
 
-function siteArchive() {
+function siteArchive(extraEntries = []) {
   const entries = [
     ["dist/server/index.js", Buffer.from("export default { fetch() {} };\n")],
     ["dist/.openai/hosting.json", Buffer.from('{"project_id":"appgprj_6a204c35ec20819185e5dc8cab8159ee"}\n')],
+    ...extraEntries,
   ];
   const blocks = [];
   for (const [name, content] of entries) {

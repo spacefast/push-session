@@ -1,11 +1,13 @@
+import { apiOrigin } from "../args.js";
+
 const COMMANDS = new Set(["list", "export", "publish"]);
 const VALUE_FLAGS = new Set(["--api-url", "--output", "--route", "--space"]);
 
-export function parseArtifactArgs(argv) {
+export function parseArtifactArgs(argv, env = process.env) {
   const options = {
     all: false,
     allVersions: false,
-    apiUrl: process.env.SPACEFAST_API_URL,
+    apiUrl: env.SPACEFAST_API_URL,
     dryRun: false,
     force: false,
     help: false,
@@ -54,12 +56,14 @@ export function parseArtifactArgs(argv) {
   if (positionals.length > 2) throw new Error("Expected an artifact command and at most one artifact query.");
   if (options.all && query) throw new Error("Use an artifact query or --all, not both.");
   if (options.newSpace && options.space) throw new Error("--new-space and --space cannot be used together.");
+  if (options.apiUrl) options.apiUrl = apiOrigin(options.apiUrl);
   return { command, query, options };
 }
 
 function assignValue(options, flag, value) {
+  if (!value) throw new Error(`${flag} requires a value.`);
   if (flag === "--space") options.space = value;
   if (flag === "--output") options.output = value;
   if (flag === "--route") options.route = value;
-  if (flag === "--api-url") options.apiUrl = value.replace(/\/$/, "");
+  if (flag === "--api-url") options.apiUrl = value;
 }

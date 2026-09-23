@@ -85,7 +85,7 @@ function safePathSegment(value) {
     .replace(/[^a-zA-Z0-9._-]+/g, "-")
     .replace(/^-+|-+$/g, "")
     .slice(0, 120);
-  return segment || "session";
+  return segment && segment !== "." && segment !== ".." ? segment : "session";
 }
 
 export function toT3WireItem(message, index, context = {}) {

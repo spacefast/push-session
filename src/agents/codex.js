@@ -31,30 +31,39 @@ export function createCodexAdapter(options = {}) {
     description: "OpenAI Codex CLI",
     installed: () => roots.some(exists),
     discover(options = {}) {
-      const seen = new Set();
-      const sessions = [];
+      const sessions = new Map();
       const candidates = [];
       for (const root of roots) {
         for (const filePath of walkFiles(root, (_file, name) => name.endsWith(".jsonl"))) {
-          if (options.query && !path.basename(filePath).includes(options.query)) continue;
           candidates.push({ filePath, stats: fileStats(filePath) });
         }
       }
       candidates.sort((left, right) => right.stats.updatedAt - left.stats.updatedAt);
       const limit = options.limit || 500;
       for (const candidate of candidates) {
+        if (options.query) {
+          const id = peekCodexId(candidate.filePath);
+          if (id && !id.startsWith(options.query)) continue;
+        }
         const session = inspectCodexSession(candidate.filePath, candidate.stats);
-        if (!session || seen.has(session.id)) continue;
-        seen.add(session.id);
-        sessions.push(session);
-        if (sessions.length >= limit) break;
+        if (!session || (options.query && !session.id.startsWith(options.query))) continue;
+        const existing = sessions.get(session.id);
+        if (!existing || byRecent(session, existing) < 0) sessions.set(session.id, session);
+        if (!options.query && sessions.size >= limit) break;
       }
-      return sessions.sort(byRecent);
+      return [...sessions.values()].sort(byRecent).slice(0, limit);
     },
     load(session) {
       return parseCodexMessages(session.filePath);
     },
   };
+}
+
+function peekCodexId(filePath) {
+  const prefix = readPrefix(filePath, 1_024);
+  if (!/"type"\s*:\s*"session_meta"/.test(prefix)) return null;
+  const match = prefix.match(/"payload"\s*:\s*\{\s*(?:"session_id"\s*:\s*"(?:[^"\\]|\\.)*"\s*,\s*)?"id"\s*:\s*("(?:[^"\\]|\\.)*")/);
+  return match ? safeJson(match[1]) : null;
 }
 
 function inspectCodexSession(filePath, knownStats) {

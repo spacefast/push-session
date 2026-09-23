@@ -4,15 +4,15 @@ import path from "node:path";
 import * as prompts from "@clack/prompts";
 import pc from "picocolors";
 
-import { loadConfig, saveConfig } from "../config.js";
+import { loadConfig, rememberPublishResult, selectPublishState } from "../config.js";
 import { publishSession } from "../spacefast.js";
 import { parseArtifactArgs } from "./args.js";
 import { discoverClaudeArtifacts, matchesArtifact } from "./claude.js";
 import { writeArtifactBundle } from "./files.js";
-import { renderClaudeArtifactBundle } from "./render.js";
+import { artifactRouteSegment, renderClaudeArtifactBundle } from "./render.js";
 
 export async function runArtifacts(argv = [], dependencies = {}) {
-  const parsed = parseArtifactArgs(argv);
+  const parsed = parseArtifactArgs(argv, dependencies.env || process.env);
   if (parsed.options.help) return printArtifactHelp();
   const log = dependencies.log || console.log;
   const env = dependencies.env || process.env;
@@ -37,7 +37,7 @@ export async function runArtifacts(argv = [], dependencies = {}) {
   if (recoverable.length === 0) throw new Error("The selected artifact source could not be recovered from its transcript, file history, or live path.");
   const defaultRoute = parsed.options.all
     ? "artifacts/claude/archive"
-    : `artifacts/claude/${safeSegment(recoverable[0].id)}`;
+    : `artifacts/claude/${artifactRouteSegment(recoverable[0].id)}`;
   const bundle = renderClaudeArtifactBundle(recoverable, {
     allVersions: parsed.options.allVersions,
     basePath: parsed.options.route || defaultRoute,
@@ -131,23 +131,16 @@ async function publishBundle({ bundle, title, parsed, env, dependencies, interac
     warn(`${error.message} Publishing without saved state.`);
     config = { version: 1 };
   }
-  const configuredSpace = parsed.options.newSpace ? null : parsed.options.space || config.space?.id || null;
-  const reusingGlobalSpace = Boolean(!parsed.options.newSpace && !parsed.options.space && config.space?.id);
-  const configuredClaim = configuredSpace === config.space?.id ? config.space?.claimToken : null;
-  const savedAccessToken = configuredSpace === config.space?.id ? config.space?.accessToken : null;
-  const accessToken = env.SPACEFAST_TOKEN || savedAccessToken || null;
-  if (parsed.options.space && !accessToken && !configuredClaim) {
-    throw new Error("Publishing to --space requires SPACEFAST_TOKEN unless it is the saved anonymous space.");
-  }
+  const state = selectPublishState(config, parsed.options, env);
 
   const spinner = interactive ? prompts.spinner() : null;
-  spinner?.start(configuredSpace ? "Publishing artifacts to your session space" : "Creating your artifact space");
+  spinner?.start(state.spaceId ? "Publishing artifacts to your session space" : "Creating your artifact space");
   const publish = ({ spaceId, accessToken: token, claimToken }) => publishSession({
     session: { id: `claude-artifacts-${Date.now()}`, title },
     files: bundle.files,
     entryPath: bundle.entryPath,
     basePath: bundle.basePath,
-    apiUrl: parsed.options.apiUrl || config.apiUrl,
+    apiUrl: state.apiUrl,
     spaceId,
     accessToken: token,
     claimToken,
@@ -158,9 +151,9 @@ async function publishBundle({ bundle, title, parsed, env, dependencies, interac
 
   let result;
   try {
-    result = await publish({ spaceId: configuredSpace, accessToken, claimToken: configuredClaim });
+    result = await publish({ spaceId: state.spaceId, accessToken: state.accessToken, claimToken: state.claimToken });
   } catch (error) {
-    if (!reusingGlobalSpace || !canReplaceSavedSpace(error)) {
+    if (!state.reusingGlobalSpace || !canReplaceSavedSpace(error)) {
       spinner?.stop("Publish failed");
       throw error;
     }
@@ -180,20 +173,7 @@ async function publishBundle({ bundle, title, parsed, env, dependencies, interac
   spinner?.stop("Artifacts published");
 
   try {
-    const continuingSavedAccess = result.space.id === config.space?.id ? savedAccessToken : null;
-    const persistedAccessToken = result.credential?.accessToken || continuingSavedAccess || undefined;
-    saveConfig({
-      version: 1,
-      apiUrl: parsed.options.apiUrl || config.apiUrl,
-      space: {
-        id: result.space.id,
-        liveUrl: result.space.liveUrl,
-        accessToken: persistedAccessToken,
-        claimToken: persistedAccessToken ? undefined : result.space.claimToken,
-        claimUrl: result.space.claimUrl,
-        expiresAt: result.space.expiresAt,
-      },
-    }, env);
+    rememberPublishResult(config, state, result, env);
   } catch (error) {
     warn(`${error.message} This publish succeeded, but global space reuse could not be saved.`);
   }
@@ -241,10 +221,6 @@ function canReplaceSavedSpace(error) {
 function shortId(value) {
   const text = String(value || "unknown");
   return text.length > 12 ? text.slice(0, 8) : text;
-}
-
-function safeSegment(value) {
-  return String(value || "artifact").replace(/[^a-zA-Z0-9._-]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 120) || "artifact";
 }
 
 function printArtifactHelp() {

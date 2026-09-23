@@ -123,7 +123,7 @@ function versionMetadata(version) {
 
 function normalizePath(value) {
   const normalized = String(value || "").replaceAll("\\", "/").replace(/^\/+|\/+$/g, "");
-  if (!normalized || normalized.split("/").includes("..")) throw new Error(`Invalid Sites export path: ${value}`);
+  if (!normalized || normalized.split("/").some((segment) => !segment || segment === "." || segment === "..")) throw new Error(`Invalid Sites export path: ${value}`);
   return normalized;
 }
 
