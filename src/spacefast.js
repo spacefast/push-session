@@ -206,7 +206,7 @@ async function createScopedShareLink({ apiUrl, bearerToken, fetchImpl, spaceId, 
     },
     body: JSON.stringify({
       name: String(shareName || `Session: ${title || "Shared AI session"}`).slice(0, 180),
-      landingPath: `/${entryPath}`,
+      landingPath: `/${basePath}`,
       resources: { include: [`/${basePath}`, `/${basePath}/**`] },
       capabilities: ["page.view"],
       target: { kind: "live" },
