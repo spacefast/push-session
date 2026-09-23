@@ -22,6 +22,6 @@ test("rejects conflicting space selection", () => {
   assert.throws(() => parseArgs(["--space", "spc_one", "--new-space"]), /cannot be used together/);
   assert.throws(() => parseArgs(["codex", "one", "--limit=2x"]), /integer between 1 and 500/);
   assert.throws(() => parseArgs(["codex", "one", "--space="]), /requires a value/);
-  assert.throws(() => parseArgs(["codex", "one", "--api-url", "https://api.example/other"]), /HTTP\(S\) origin/);
+  assert.throws(() => parseArgs(["codex", "one", "--api-url", "https://api.example/other"]), /HTTPS origin or an HTTP loopback origin/);
   assert.equal(parseArgs([], { SPACEFAST_API_URL: "https://api.example/" }).options.apiUrl, "https://api.example");
 });

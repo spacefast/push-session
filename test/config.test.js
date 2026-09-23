@@ -24,5 +24,9 @@ test("stores reusable session-space credentials in one user-global config", (con
   assert.equal(fs.statSync(configPath(env)).mode & 0o777, 0o600);
 
   fs.writeFileSync(configPath(env), JSON.stringify({ apiUrl: "file:///tmp/other", space: { id: "spc_global" } }));
-  assert.throws(() => loadConfig(env), /HTTP\(S\) origin/);
+  assert.throws(() => loadConfig(env), /HTTPS origin or an HTTP loopback origin/);
+  fs.writeFileSync(configPath(env), JSON.stringify({ apiUrl: "http://external.example" }));
+  assert.throws(() => loadConfig(env), /HTTPS origin or an HTTP loopback origin/);
+  fs.writeFileSync(configPath(env), JSON.stringify({ apiUrl: "http://127.0.0.1:3000" }));
+  assert.equal(loadConfig(env).apiUrl, "http://127.0.0.1:3000");
 });

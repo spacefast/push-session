@@ -9,7 +9,7 @@ import { discoverClaudeSessionArtifacts } from "./artifacts/claude.js";
 import { runArtifacts } from "./artifacts/cli.js";
 import { renderSessionWithArtifacts } from "./artifacts/session.js";
 import { discoverCodexSessionSites } from "./artifacts/sites.js";
-import { loadConfig, rememberPublishResult, selectPublishState } from "./config.js";
+import { configPath, loadConfig, rememberPublishResult, selectPublishState } from "./config.js";
 import { publishSession } from "./spacefast.js";
 import { packageVersion } from "./version.js";
 
@@ -87,11 +87,13 @@ export async function run(argv = process.argv.slice(2), dependencies = {}) {
   }
 
   let config;
+  let configReadable = true;
   try {
     config = loadConfig(env);
   } catch (error) {
-    warn(`${error.message} Publishing without saved state.`);
+    warn(`${error.message} Config file: ${configPath(env)}. Publishing without saved state; the existing config will not be changed.`);
     config = { version: 1 };
+    configReadable = false;
   }
   const state = selectPublishState(config, parsed.options, env);
 
@@ -137,10 +139,12 @@ export async function run(argv = process.argv.slice(2), dependencies = {}) {
     spinner?.stop("Session published");
   }
 
-  try {
-    rememberPublishResult(config, state, result, env);
-  } catch (error) {
-    warn(`${error.message} This publish succeeded, but global space reuse could not be saved.`);
+  if (configReadable) {
+    try {
+      rememberPublishResult(config, state, result, env);
+    } catch (error) {
+      warn(`${error.message} This publish succeeded, but global space reuse could not be saved.`);
+    }
   }
 
   const output = {

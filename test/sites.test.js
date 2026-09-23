@@ -4,7 +4,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
-import { gzipSync } from "node:zlib";
+import { gunzipSync, gzipSync } from "node:zlib";
 
 import { renderSessionWithArtifacts } from "../src/artifacts/session.js";
 import { discoverCodexSessionSites, parseCodexSitesTranscript } from "../src/artifacts/sites.js";
@@ -70,6 +70,12 @@ test("recovers the exact ChatGPT Sites commit and deployment package from a Code
   assert.equal(unsafe.versions[0].source.archive, null);
   assert.equal(unsafe.versions[0].source.files.some((file) => file.path === "app/page.tsx"), true);
 
+  const metadataArchive = gunzipSync(archiveContent);
+  metadataArchive[156] = "x".charCodeAt(0);
+  fs.writeFileSync(archive, gzipSync(metadataArchive));
+  const [unsupported] = discoverCodexSessionSites({ filePath: transcript, project: root });
+  assert.equal(unsupported.versions[0].source.archive, null);
+
   fs.writeFileSync(archive, siteArchive([["dist/.openai/hosting.json", Buffer.from('{"project_id":"appgprj_other"}')]]));
   const [unrelated] = discoverCodexSessionSites({ filePath: transcript, project: root });
   assert.equal(unrelated.versions[0].source.archive, null);
@@ -99,6 +105,36 @@ test("recognizes Sites calls made through the Codex exec orchestrator", (context
   assert.equal(sites[0].versions[0].id, "ver_nested");
   assert.equal(sites[0].versions[0].number, 2);
   assert.equal(sites[0].versions[0].commitSha, "abc123");
+});
+
+test("pairs multiple Sites results with their calls inside one exec", (context) => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "push-session-sites-batch-"));
+  context.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const transcript = path.join(root, "session.jsonl");
+  const projectId = "appgprj_batch123";
+  writeJsonl(transcript, [
+    responseItem({
+      type: "custom_tool_call",
+      name: "exec",
+      call_id: "outer-batch",
+      input: `const created = await tools.mcp__codex_apps__sites_create_site({ title: "Batch site" }); const saved = await tools.mcp__codex_apps__sites_save_site_version({ project_id: "${projectId}", commit_sha: "abc123" }); text([created, saved]);`,
+    }),
+    responseItem({
+      type: "custom_tool_call_output",
+      call_id: "outer-batch",
+      output: JSON.stringify([
+        { result: { project_id: projectId, title: "Batch site" } },
+        { result: { project_id: projectId, version_id: "ver_batch", version_number: 3 } },
+      ]),
+    }),
+  ]);
+
+  const [site] = parseCodexSitesTranscript(transcript);
+  assert.equal(site.title, "Batch site");
+  assert.equal(site.versions.length, 1);
+  assert.equal(site.versions[0].id, "ver_batch");
+  assert.equal(site.versions[0].number, 3);
+  assert.equal(site.versions[0].commitSha, "abc123");
 });
 
 test("does not attach Sites that a session only listed", (context) => {

@@ -27,15 +27,21 @@ export function discoverCodexSessionSites(session, options = {}) {
     if (entry.type !== "response_item" || !entry.payload) continue;
     const payload = entry.payload;
     if (["function_call", "custom_tool_call"].includes(payload.type)) {
-      for (const call of siteCalls(payload, entry.timestamp)) {
-        calls.set(call.callId, call);
-        applySiteCall(sites, call, null);
-      }
+      const pending = siteCalls(payload, entry.timestamp);
+      if (pending.length > 0) calls.set(payload.call_id, pending);
+      for (const call of pending) applySiteCall(sites, call, null);
       continue;
     }
     if (!["function_call_output", "custom_tool_call_output"].includes(payload.type)) continue;
-    const call = calls.get(payload.call_id);
-    if (call) applySiteCall(sites, call, unpackOutput(payload.output));
+    const pending = calls.get(payload.call_id);
+    if (!pending) continue;
+    const output = unpackOutput(payload.output);
+    const results = pending.length === 1 ? [output]
+      : Array.isArray(output) ? output
+        : Array.isArray(output?.results) ? output.results
+          : Array.isArray(output?.structuredContent?.result) ? output.structuredContent.result : [];
+    if (results.length !== pending.length) continue;
+    pending.forEach((call, index) => applySiteCall(sites, call, results[index]));
   }
 
   const recovered = [...sites.values()].map((site) => finalizeSite(site, session, options));
@@ -289,6 +295,7 @@ function tarEntries(buffer) {
     const size = Number.parseInt(nullTerminated(header.subarray(124, 136)).trim() || "0", 8);
     if (!Number.isFinite(size) || size < 0) throw new Error("Invalid tar entry size");
     if (offset + 512 + size > buffer.length) throw new Error("Truncated tar entry");
+    if ([76, 75, 120, 103].includes(header[156])) throw new Error("Unsupported tar metadata entry");
     if (header[156] === 0 || header[156] === 48) {
       entries.set(prefix ? `${prefix}/${name}` : name, buffer.subarray(offset + 512, offset + 512 + size));
     }

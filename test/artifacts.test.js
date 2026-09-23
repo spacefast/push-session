@@ -29,15 +29,40 @@ test("reconstructs every published Claude artifact version from transcript write
     assistantTool(sessionId, "2026-08-01T12:01:02Z", { type: "tool_use", id: "artifact-2", name: "Artifact", input: { file_path: sourcePath, label: "second" } }),
     toolResult(sessionId, "2026-08-01T12:01:03Z", "artifact-2", `Published ${sourcePath} at https://claude.ai/code/artifact/aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee`),
     { type: "frame-link", sessionId, path: sourcePath, frameUrl: "https://claude.ai/code/artifact/aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee", title: "Dashboard", timestamp: "2026-08-01T12:01:03Z" },
+    assistantTool(sessionId, "2026-08-01T12:01:04Z", { type: "tool_use", id: "bash-copy", name: "Bash", input: { command: `cp ${sourcePath} "$WT/internal-docs/dashboard.html" && git commit && git log --oneline -1` } }),
+    toolResult(sessionId, "2026-08-01T12:01:05Z", "bash-copy", "1234567890 Save later edits"),
   ]);
 
-  const versions = await parseClaudeArtifactTranscript(transcriptPath, { home });
+  const versions = await parseClaudeArtifactTranscript(transcriptPath, {
+    home,
+    gitBlobReader: () => "<!doctype html><h1>Later edits, not published</h1>",
+  });
   assert.equal(versions.length, 2);
   assert.equal(versions[0].source.content, "<!doctype html><h1>Version one</h1>");
   assert.equal(versions[1].source.content, "<!doctype html><h1>Version two</h1>");
   assert.equal(versions[1].source.recoveredFrom, "transcript-write+transcript-edit");
   assert.equal(versions[1].artifactId, "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee");
   assert.equal(versions[1].label, "second");
+});
+
+test("does not use a later Git copy for an earlier publish without a source snapshot", async (context) => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), "push-session-git-order-"));
+  context.after(() => fs.rmSync(home, { recursive: true, force: true }));
+  const sourcePath = path.join(home, "report.html");
+  const transcriptPath = path.join(home, "projects", "demo", "session.jsonl");
+  fs.mkdirSync(path.dirname(transcriptPath), { recursive: true });
+  writeJsonl(transcriptPath, [
+    { type: "user", sessionId: "session", timestamp: "2026-08-01T12:00:00Z", cwd: home, message: { content: "Publish" } },
+    assistantTool("session", "2026-08-01T12:00:01Z", { type: "tool_use", id: "first", name: "Artifact", input: { file_path: sourcePath } }),
+    toolResult("session", "2026-08-01T12:00:02Z", "first", "Published at https://claude.ai/code/artifact/report"),
+    assistantTool("session", "2026-08-01T12:01:01Z", { type: "tool_use", id: "second", name: "Artifact", input: { file_path: sourcePath } }),
+    toolResult("session", "2026-08-01T12:01:02Z", "second", "Published at https://claude.ai/code/artifact/report"),
+    assistantTool("session", "2026-08-01T12:01:03Z", { type: "tool_use", id: "copy", name: "Bash", input: { command: `cp ${sourcePath} "$WT/internal-docs/report.html" && git commit && git log --oneline -1` } }),
+    toolResult("session", "2026-08-01T12:01:04Z", "copy", "1234567890 Save report"),
+  ]);
+  const versions = await parseClaudeArtifactTranscript(transcriptPath, { home, gitBlobReader: () => "<h1>Second version</h1>" });
+  assert.equal(versions[0].source, null);
+  assert.equal(versions[1].source.content, "<h1>Second version</h1>");
 });
 
 test("uses Claude file history as the baseline for an edit when the live source is gone", async (context) => {
@@ -76,8 +101,6 @@ test("recovers an exact durable source copied into a Git commit after publishing
   fs.mkdirSync(path.dirname(transcriptPath), { recursive: true });
   writeJsonl(transcriptPath, [
     { type: "user", sessionId, cwd: project, timestamp: "2026-08-01T12:00:00Z", message: { content: "Publish it" } },
-    assistantTool(sessionId, "2026-08-01T12:00:01Z", { type: "tool_use", id: "write-1", name: "Write", input: { file_path: sourcePath, content: "incomplete" } }),
-    toolResult(sessionId, "2026-08-01T12:00:02Z", "write-1", "Wrote file"),
     assistantTool(sessionId, "2026-08-01T12:00:03Z", { type: "tool_use", id: "artifact-1", name: "Artifact", input: { file_path: sourcePath, title: "Git report" } }),
     toolResult(sessionId, "2026-08-01T12:00:04Z", "artifact-1", "Published at https://claude.ai/code/artifact/git-report"),
     assistantTool(sessionId, "2026-08-01T12:00:05Z", { type: "tool_use", id: "bash-1", name: "Bash", input: { command: `cp ${sourcePath} \"$WT/${gitPath}\" && git commit && git log --oneline -1` } }),
@@ -97,6 +120,27 @@ test("recovers an exact durable source copied into a Git commit after publishing
   assert.deepEqual(reads, [{ project, commit: commit.slice(0, 10), gitPath }]);
 });
 
+test("uses the current file only for the last publication without an exact source", async (context) => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), "push-session-live-source-"));
+  context.after(() => fs.rmSync(home, { recursive: true, force: true }));
+  const sourcePath = path.join(home, "latest.html");
+  const transcriptPath = path.join(home, "projects", "demo", "session.jsonl");
+  fs.mkdirSync(path.dirname(transcriptPath), { recursive: true });
+  fs.writeFileSync(sourcePath, "<h1>Current file</h1>");
+  writeJsonl(transcriptPath, [
+    assistantTool("session", "2026-08-01T12:00:00Z", { type: "tool_use", id: "first", name: "Artifact", input: { file_path: sourcePath } }),
+    toolResult("session", "2026-08-01T12:00:01Z", "first", "Published at https://claude.ai/code/artifact/shared-report"),
+    assistantTool("session", "2026-08-01T12:05:00Z", { type: "tool_use", id: "second", name: "Artifact", input: { file_path: sourcePath } }),
+    toolResult("session", "2026-08-01T12:05:01Z", "second", "Published at https://claude.ai/code/artifact/shared-report"),
+  ]);
+
+  const versions = await parseClaudeArtifactTranscript(transcriptPath, { home });
+  assert.equal(versions.length, 2);
+  assert.equal(versions[0].source, null);
+  assert.equal(versions[1].source.content, "<h1>Current file</h1>");
+  assert.equal(versions[1].source.recoveredFrom, "live-file");
+});
+
 test("renders HTML unchanged and Markdown as a self-contained HTML page", (context) => {
   const artifact = fakeArtifact();
   const bundle = renderClaudeArtifactBundle([artifact], { allVersions: true, exportedAt: "2026-08-01T12:00:00Z" });
@@ -105,6 +149,13 @@ test("renders HTML unchanged and Markdown as a self-contained HTML page", (conte
   assert.equal(latest.content, "<!doctype html><h1>Latest</h1>");
   assert.match(oldMarkdown.content, /claude-artifact-data/);
   assert.match(oldMarkdown.content, /# First/);
+  const commented = renderClaudeArtifactBundle([{
+    ...artifact,
+    versions: [{ ...artifact.versions[0], source: { ...artifact.versions[0].source, content: "# First\n<!-- note -->\n</script>" } }],
+  }], { allVersions: true });
+  const commentedPage = commented.files.find((file) => file.path.endsWith(`/artifacts/${artifact.id}/index.html`));
+  const payload = commentedPage.content.match(/<script id="claude-artifact-data" type="application\/json">([^<]*)<\/script>/)?.[1];
+  assert.equal(JSON.parse(payload).source, "# First\n<!-- note -->\n</script>");
   assert.equal(bundle.manifest.artifacts[0].versions[0].sha256, "old-hash");
 
   const output = fs.mkdtempSync(path.join(os.tmpdir(), "push-session-export-"));

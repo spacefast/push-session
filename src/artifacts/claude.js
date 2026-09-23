@@ -153,10 +153,12 @@ export async function parseClaudeArtifactTranscript(filePath, options = {}) {
   for (const publication of pendingPublishes.values()) {
     if (publication.url) versions.push(publication);
   }
+  const latestByPath = new Map(versions.filter((version) => version.sourcePath).map((version) => [version.sourcePath, version]));
   for (const version of versions) {
-    const durable = nearestDurableCopy(version, durableCopies);
+    if (version.source) continue;
+    const durable = nearestDurableCopy(version, durableCopies, versions);
     if (durable) version.source = durable.source;
-    if (!version.source) version.source = recoverLiveSource(version.sourcePath);
+    else if (latestByPath.get(version.sourcePath) === version) version.source = recoverLiveSource(version.sourcePath);
   }
   return dedupeVersions(versions);
 }
@@ -214,12 +216,17 @@ function readGitBlob(project, commit, gitPath) {
   });
 }
 
-function nearestDurableCopy(version, copies) {
+function nearestDurableCopy(version, copies, versions) {
   const publishedAt = Date.parse(version.publishedAt || "");
   return copies
     .filter((copy) => copy.sourcePath === version.sourcePath)
     .map((copy) => ({ copy, delta: Date.parse(copy.timestamp || "") - publishedAt }))
     .filter(({ delta }) => Number.isFinite(delta) && delta >= 0 && delta < 5 * 60_000)
+    .filter(({ delta }) => !versions.some((other) => {
+      if (other === version || other.sourcePath !== version.sourcePath) return false;
+      const otherDelta = Date.parse(other.publishedAt || "") - publishedAt;
+      return Number.isFinite(otherDelta) && otherDelta > 0 && otherDelta <= delta;
+    }))
     .sort((left, right) => left.delta - right.delta)[0]?.copy || null;
 }
 

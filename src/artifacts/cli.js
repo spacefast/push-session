@@ -4,7 +4,7 @@ import path from "node:path";
 import * as prompts from "@clack/prompts";
 import pc from "picocolors";
 
-import { loadConfig, rememberPublishResult, selectPublishState } from "../config.js";
+import { configPath, loadConfig, rememberPublishResult, selectPublishState } from "../config.js";
 import { publishSession } from "../spacefast.js";
 import { parseArtifactArgs } from "./args.js";
 import { discoverClaudeArtifacts, matchesArtifact } from "./claude.js";
@@ -125,11 +125,13 @@ async function selectArtifacts(artifacts, parsed, interactive) {
 async function publishBundle({ bundle, title, parsed, env, dependencies, interactive }) {
   const warn = dependencies.warn || ((message) => interactive ? prompts.log.warn(message) : console.error(`Warning: ${message}`));
   let config;
+  let configReadable = true;
   try {
     config = loadConfig(env);
   } catch (error) {
-    warn(`${error.message} Publishing without saved state.`);
+    warn(`${error.message} Config file: ${configPath(env)}. Publishing without saved state; the existing config will not be changed.`);
     config = { version: 1 };
+    configReadable = false;
   }
   const state = selectPublishState(config, parsed.options, env);
 
@@ -172,10 +174,12 @@ async function publishBundle({ bundle, title, parsed, env, dependencies, interac
   }
   spinner?.stop("Artifacts published");
 
-  try {
-    rememberPublishResult(config, state, result, env);
-  } catch (error) {
-    warn(`${error.message} This publish succeeded, but global space reuse could not be saved.`);
+  if (configReadable) {
+    try {
+      rememberPublishResult(config, state, result, env);
+    } catch (error) {
+      warn(`${error.message} This publish succeeded, but global space reuse could not be saved.`);
+    }
   }
   return result;
 }

@@ -129,6 +129,13 @@ test("one-off space and alternate API publishes preserve the saved global space"
   assert.equal(requests[1].url, "https://alternate.example/v1/publish?wait=1");
   assert.equal(requests[1].payload.spaceId, undefined);
   assert.deepEqual(loadConfig(env).space, { id: "spc_global", claimToken: "global-key" });
+
+  const unreadable = '{"space":{"id":"spc_global","accessToken":"saved-key"},"apiUrl":"file:///invalid"}';
+  fs.writeFileSync(env.PUSH_SESSION_CONFIG, unreadable);
+  const warnings = [];
+  await run(["codex", "session-one", "--json"], { ...dependencies, warn: (message) => warnings.push(message) });
+  assert.equal(fs.readFileSync(env.PUSH_SESSION_CONFIG, "utf8"), unreadable);
+  assert.match(warnings[0], /config\.json/);
 });
 
 test("uploads recovered artifacts with their Claude session", async (context) => {

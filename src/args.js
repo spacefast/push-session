@@ -70,8 +70,8 @@ function assignValue(options, flag, value) {
 export function apiOrigin(value) {
   let url;
   try { url = new URL(value); } catch { /* handled below */ }
-  if (!url || !["http:", "https:"].includes(url.protocol) || url.username || url.password || url.search || url.hash || url.pathname !== "/") {
-    throw new Error("--api-url must be an HTTP(S) origin without a path, query, or credentials.");
+  if (!url || (url.protocol !== "https:" && !(url.protocol === "http:" && ["localhost", "127.0.0.1", "[::1]"].includes(url.hostname))) || url.username || url.password || url.search || url.hash || url.pathname !== "/") {
+    throw new Error("--api-url must be an HTTPS origin or an HTTP loopback origin without a path, query, or credentials.");
   }
   return url.origin;
 }

@@ -145,6 +145,7 @@ const SimpleWorkEntryRow = memo(function SimpleWorkEntryRow({ workEntry }) {
           target="_blank"
           rel="noreferrer"
           onClick={(event) => event.stopPropagation()}
+          onKeyDown={(event) => event.stopPropagation()}
         >
           <span>{workEntry.data.artifact.favicon || "◇"}</span>
           Open {workEntry.data.artifact.title || "artifact"}

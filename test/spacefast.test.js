@@ -69,7 +69,7 @@ test("publishes paged files and creates a page-view-only Spacefast link", async 
 
   const linkBody = JSON.parse(requests[1].init.body);
   assert.equal(requests[1].init.headers.authorization, "Bearer secret-key");
-  assert.equal(linkBody.landingPath, `/${basePath}`);
+  assert.equal(linkBody.landingPath, `/${entryPath}`);
   assert.deepEqual(linkBody.resources, { include: [`/${basePath}`, `/${basePath}/**`] });
   assert.deepEqual(linkBody.capabilities, ["page.view"]);
   assert.equal(result.shareUrl, "https://sessions.example/__/recipient-key");

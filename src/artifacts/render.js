@@ -193,7 +193,7 @@ function escapeHtml(value) {
 }
 
 function safeJson(value) {
-  return JSON.stringify(value).replace(/<\/(script)/gi, "<\\/$1").replace(/<!--/g, "<\\!--");
+  return JSON.stringify(value).replaceAll("<", "\\u003c");
 }
 
 function safeScript(value) {
