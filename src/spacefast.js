@@ -2,6 +2,8 @@ import { createHash, randomBytes, randomUUID } from "node:crypto";
 import path from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 
+import { packageVersion } from "./version.js";
+
 const MAX_PUBLISH_ATTEMPTS = 10;
 const MAX_FOLLOW_STEPS = 80;
 const DEFAULT_INLINE_LIMIT = 100 * 1024 * 1024;
@@ -13,9 +15,18 @@ export async function publishSession(input) {
 
   const apiUrl = (input.apiUrl || "https://api.spacefast.com").replace(/\/$/, "");
   const files = prepareFiles(input);
-  const entryPath = input.entryPath || files[0]?.path;
+  const entryPath = input.entryPath ? normalizeFilePath(input.entryPath) : files[0]?.path;
   if (!entryPath) throw new Error("No session entry file was provided.");
-  const basePath = input.basePath || path.posix.dirname(entryPath);
+  const basePath = normalizeFilePath(input.basePath || path.posix.dirname(entryPath));
+  if (!entryPath.startsWith(`${basePath}/`) || !files.some((file) => file.path === entryPath)) {
+    throw new Error("The session entry file must be inside the shared directory.");
+  }
+  if (files.some((file) => !file.path.startsWith(`${basePath}/`))) {
+    throw new Error("Every published file must be inside the shared directory.");
+  }
+  if (new Set(files.map((file) => file.path)).size !== files.length) {
+    throw new Error("The session contains duplicate publish paths.");
+  }
   const requestedSpace = input.spaceId || null;
   let bearerToken = input.accessToken || input.claimToken || null;
   let exchangedAccessToken = null;
@@ -24,7 +35,7 @@ export async function publishSession(input) {
   const publishPayload = {
     ...(requestedSpace && { spaceId: requestedSpace }),
     publishMode: "additive",
-    ...(!requestedSpace && { space: { title: "Shared AI sessions" } }),
+    ...(!requestedSpace && { space: { title: input.spaceTitle || "Shared AI sessions" } }),
   };
   const inline = totalFileBytes(files) <= (input.inlineLimitBytes ?? DEFAULT_INLINE_LIMIT);
   let initial;
@@ -77,6 +88,7 @@ export async function publishSession(input) {
     entryPath,
     basePath,
     title: input.session?.title,
+    shareName: input.shareName,
   });
   const liveUrl = space.liveUrl || initialData?.space?.liveUrl || null;
   const landingUrl = liveUrl ? new URL(entryPath, ensureTrailingSlash(liveUrl)).href : null;
@@ -184,7 +196,7 @@ async function uploadTargets({ targets, files, apiUrl, fetchImpl }) {
   }
 }
 
-async function createScopedShareLink({ apiUrl, bearerToken, fetchImpl, spaceId, entryPath, basePath, title }) {
+async function createScopedShareLink({ apiUrl, bearerToken, fetchImpl, spaceId, entryPath, basePath, title, shareName }) {
   if (!bearerToken) throw new Error("Spacefast published the session but did not return authority to create its private share link.");
   const response = await fetchImpl(`${apiUrl}/v1/spaces/${encodeURIComponent(spaceId)}/share-links`, {
     method: "POST",
@@ -193,7 +205,7 @@ async function createScopedShareLink({ apiUrl, bearerToken, fetchImpl, spaceId, 
       "content-type": "application/json",
     },
     body: JSON.stringify({
-      name: `Session: ${String(title || "Shared AI session").slice(0, 180)}`,
+      name: String(shareName || `Session: ${title || "Shared AI session"}`).slice(0, 180),
       landingPath: `/${basePath}`,
       resources: { include: [`/${basePath}`, `/${basePath}/**`] },
       capabilities: ["page.view"],
@@ -256,7 +268,7 @@ export function sessionRoute(session) {
 
 function normalizeFilePath(value) {
   const normalized = String(value || "").replaceAll("\\", "/").replace(/^\/+/, "");
-  if (!normalized || normalized.split("/").some((segment) => segment === "..")) {
+  if (!normalized || normalized.split("/").some((segment) => !segment || segment === "." || segment === "..")) {
     throw new Error(`Invalid publish path: ${value}`);
   }
   return normalized;
@@ -268,13 +280,13 @@ function safeSegment(value) {
     .replace(/[^a-zA-Z0-9._-]+/g, "-")
     .replace(/^-+|-+$/g, "")
     .slice(0, 120);
-  return segment || "session";
+  return segment && segment !== "." && segment !== ".." ? segment : "session";
 }
 
 function requestHeaders({ bearerToken, idempotencyKey, idempotencyPrincipal }) {
   return {
     accept: "application/json",
-    "x-spacefast-client": "push-session/0.1.0",
+    "x-spacefast-client": `push-session/${packageVersion}`,
     ...(bearerToken && { authorization: `Bearer ${bearerToken}` }),
     ...(idempotencyKey && { "idempotency-key": idempotencyKey }),
     ...(idempotencyPrincipal && { "x-spacefast-idempotency-principal": idempotencyPrincipal }),

@@ -146,7 +146,7 @@ function parseClaudeMessages(filePath) {
     if (text) messages.push({ role, content: text, model: entry.message?.model, createdAt: entry.timestamp });
     for (const part of Array.isArray(content) ? content : []) {
       if (part?.type === "tool_use") {
-        const tool = { role: "tool", name: part.name || "tool", input: part.input, status: "completed", createdAt: entry.timestamp };
+        const tool = { role: "tool", id: part.id, name: part.name || "tool", input: part.input, status: "completed", createdAt: entry.timestamp };
         messages.push(tool);
         if (part.id) tools.set(part.id, tool);
       }

@@ -7,6 +7,9 @@ links.
 npx push-session
 npx push-session claude
 npx push-session codex <session-id>
+npx push-session artifacts list
+npx push-session artifacts export --all
+npx push-session artifacts publish <artifact-id>
 ```
 
 It discovers local Codex, Claude Code, Gemini CLI, Cursor Agent, and Pi sessions,
@@ -16,16 +19,73 @@ that space from any working directory without adding project-local state. If
 saved implicit state can no longer authorize the space, publishing continues in
 a replacement space; an explicit `--space <id>` remains strict. Claim the space
 to keep using it, or set `SPACEFAST_TOKEN` for owned publishing.
+Publishing once with `--space` keeps the saved default space. An `--api-url`
+override uses separate API state and keeps the saved default unless you also
+pass `--new-space` to make the new space your default.
 
 Sessions render as paginated, read-only transcripts with Markdown and tool
 calls. Each share uses the session ID as its route and a scoped, unguessable
-view-only access link.
+view-only access link. Claude sessions also recover and upload their published
+HTML or Markdown artifacts automatically. The session page links each artifact,
+and transcript references point at the recovered copy inside the same private
+Spacefast share. Codex sessions do the same for ChatGPT Sites: `push-session`
+attaches a browsable snapshot of the exact recorded Git commit and, when it is
+still present locally, the original Sites deployment package. It keeps the real
+live Sites URL as the application link because a Sites Worker build is not a
+static HTML site.
 
 > Sessions may contain code, file paths, commands, or secrets. Review before
 > sharing. Anyone with the generated link can view it.
 
 Options: `--space <id>`, `--new-space`, `--limit <n>`, `--dry-run`, `--json`,
 and `--api-url <url>`.
+
+## Recover Claude Code artifacts
+
+Claude Code writes artifact sources to local HTML or Markdown files before it
+publishes them. The transcript retains the source path, publish URL, `Write` and
+`Edit` operations, and file-history references even after a temporary source
+file disappears. `push-session artifacts` rebuilds those sources and versions:
+
+```bash
+# Inventory every locally recorded Claude artifact and its recovery status.
+npx push-session artifacts list
+
+# Export a self-contained HTML gallery plus the original sources.
+npx push-session artifacts export --all --versions --output ./claude-artifacts
+
+# Republish one recovered artifact, or the complete gallery, through Spacefast.
+npx push-session artifacts publish <artifact-id>
+npx push-session artifacts publish --all --versions
+```
+
+`export` refuses a non-empty output directory unless `--force` is present,
+and refuses to write through symlinks even with `--force`. New export files
+and directories are private to the current user by default.
+`publish --dry-run` reconstructs and renders without uploading. Artifact queries
+match the Claude artifact ID or URL, session ID, title, and source path.
+
+> Recovered artifacts can contain sensitive data. HTML artifacts are active
+> pages: opening or publishing one runs its scripts. Review sources first.
+
+## Recover ChatGPT Sites
+
+No separate command is needed. Publish the Codex session that created or
+updated the Site:
+
+```bash
+npx push-session codex <session-id>
+```
+
+The exporter reads recorded Sites save and deploy calls, finds the matching
+`.openai/hosting.json` at the saved Git commit, and uploads that Site source
+under the session route. Tracked environment files, private keys, credential
+files, oversized files, and files beyond the recovery size limit are omitted
+and listed on the version page. If the original temporary deployment archive
+still exists, the version page includes it as a download.
+Archives that belong to a different Site or contain files with sensitive
+names are left out. Review the transcript, source, and any remaining archive
+before sharing; embedded secrets in code cannot be detected reliably.
 
 The viewer directly vendors static components from MIT-licensed
 [T3 Code](https://github.com/pingdotgg/t3code); its license and attribution are

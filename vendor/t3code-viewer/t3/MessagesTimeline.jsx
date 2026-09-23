@@ -138,6 +138,21 @@ const SimpleWorkEntryRow = memo(function SimpleWorkEntryRow({ workEntry }) {
           <pre className="work-detail">{expandedBody}</pre>
         </div>
       ) : null}
+      {workEntry.data?.artifact ? (
+        <a
+          className="artifact-work-link"
+          href={workEntry.data.artifact.href}
+          target="_blank"
+          rel="noreferrer"
+          onClick={(event) => event.stopPropagation()}
+          onKeyDown={(event) => event.stopPropagation()}
+        >
+          <span>{workEntry.data.artifact.favicon || "◇"}</span>
+          Open {workEntry.data.artifact.title || "artifact"}
+          {workEntry.data.artifact.version ? ` · version ${workEntry.data.artifact.version}` : ""}
+          <span aria-hidden="true">↗</span>
+        </a>
+      ) : null}
     </div>
   );
 });
@@ -163,6 +178,7 @@ function toolWorkEntryHeading(workEntry) {
     exec_command: "Ran command",
     shell: "Ran command",
     bash: "Ran command",
+    artifact: "Published artifact",
     apply_patch: "Edited files",
     read_file: "Read file",
     view_image: "Viewed image",

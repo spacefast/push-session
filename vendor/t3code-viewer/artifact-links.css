@@ -1,0 +1,90 @@
+.artifact-shelf {
+  margin-top: 24px;
+}
+
+.artifact-shelf-title {
+  margin-bottom: 9px;
+  color: var(--muted-foreground);
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: .08em;
+  text-transform: uppercase;
+}
+
+.artifact-cards {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(230px, 1fr));
+  gap: 8px;
+}
+
+.artifact-card {
+  display: grid;
+  grid-template-columns: 34px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+  padding: 10px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--card) 82%, transparent);
+  box-shadow: var(--shadow);
+  text-decoration: none;
+}
+
+.artifact-card:hover {
+  border-color: var(--ring);
+  background: var(--card);
+}
+
+.artifact-icon {
+  display: grid;
+  width: 34px;
+  height: 34px;
+  place-items: center;
+  border-radius: 8px;
+  background: var(--secondary);
+  font-size: 17px;
+}
+
+.artifact-card-copy {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  line-height: 1.35;
+}
+
+.artifact-card-copy strong {
+  overflow: hidden;
+  font-size: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.artifact-card-copy small {
+  color: var(--muted-foreground);
+  font-size: 10px;
+}
+
+.artifact-arrow {
+  color: var(--muted-foreground);
+  font-size: 13px;
+}
+
+.artifact-work-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin: 5px 0 3px 28px;
+  padding: 5px 8px;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  background: var(--card);
+  color: var(--foreground);
+  font-size: 11px;
+  font-weight: 600;
+  text-decoration: none;
+}
+
+.artifact-work-link:hover {
+  border-color: var(--ring);
+}

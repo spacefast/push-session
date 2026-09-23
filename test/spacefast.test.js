@@ -2,9 +2,32 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import { publishSession, sessionRoute } from "../src/spacefast.js";
+import { packageVersion } from "../src/version.js";
 
 test("builds a session route from one sanitized session ID", () => {
   assert.equal(sessionRoute({ agent: "codex", id: "session/id" }), "sessions/session-id/index.html");
+  assert.equal(sessionRoute({ id: ".." }), "sessions/session/index.html");
+});
+
+test("rejects paths outside the shared directory before publishing", async () => {
+  let requests = 0;
+  const fetchImpl = async () => { requests += 1; throw new Error("unexpected upload"); };
+  await assert.rejects(publishSession({
+    session: { id: "one" },
+    files: [{ path: "sessions/one/../private.html", content: "secret" }],
+    fetchImpl,
+  }), /Invalid publish path/);
+  await assert.rejects(publishSession({
+    session: { id: "one" },
+    basePath: "sessions/one",
+    entryPath: "sessions/one/index.html",
+    files: [
+      { path: "sessions/one/index.html", content: "shared" },
+      { path: "private.html", content: "secret" },
+    ],
+    fetchImpl,
+  }), /inside the shared directory/);
+  assert.equal(requests, 0);
 });
 
 test("publishes paged files and creates a page-view-only Spacefast link", async () => {
@@ -37,6 +60,7 @@ test("publishes paged files and creates a page-view-only Spacefast link", async 
   });
 
   assert.equal(requests[0].url, "https://api.spacefast.com/v1/publish?wait=1");
+  assert.equal(requests[0].init.headers["x-spacefast-client"], `push-session/${packageVersion}`);
   assert.match(requests[0].init.headers["x-spacefast-idempotency-principal"], /^[0-9a-f]{64}$/);
   const payload = JSON.parse(requests[0].init.body.get("payload"));
   assert.equal(payload.publishMode, "additive");
@@ -163,6 +187,37 @@ test("switches giant sessions to manifest uploads and follows upload receipts", 
   assert.equal(requests[1].init.headers.authorization, "Upload signed");
   assert.equal(requests[2].url, "https://api.spacefast.com/resume");
   assert.equal(result.shareUrl, "https://big.example/__/link");
+});
+
+test("accepts artifact-specific space and share names", async () => {
+  const requests = [];
+  const fetchImpl = async (url, init) => {
+    requests.push({ url: String(url), init });
+    if (String(url).endsWith("/share-links")) {
+      return jsonResponse(201, { data: { url: "https://example.test/private" } });
+    }
+    return jsonResponse(201, {
+      data: {
+        space: { id: "spc_artifacts", liveUrl: "https://example.test/" },
+        claim: { key: "claim-key" },
+        next: { action: "done" },
+      },
+    });
+  };
+  await publishSession({
+    session: { id: "artifact", title: "Artifact title" },
+    files: [{ path: "artifacts/one/index.html", content: "<h1>One</h1>" }],
+    entryPath: "artifacts/one/index.html",
+    basePath: "artifacts/one",
+    spaceTitle: "Shared AI artifacts",
+    shareName: "Claude artifact: One",
+    fetchImpl,
+  });
+
+  const publishPayload = JSON.parse(requests[0].init.body.get("payload"));
+  assert.equal(publishPayload.space.title, "Shared AI artifacts");
+  const sharePayload = JSON.parse(requests[1].init.body);
+  assert.equal(sharePayload.name, "Claude artifact: One");
 });
 
 function jsonResponse(status, body) {

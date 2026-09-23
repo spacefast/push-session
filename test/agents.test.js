@@ -17,7 +17,7 @@ test("discovers and maps a Codex session with paired tool output", (context) => 
   fs.mkdirSync(directory, { recursive: true });
   const file = path.join(directory, "rollout-test.jsonl");
   writeJsonl(file, [
-    { type: "session_meta", payload: { id: "codex-session", timestamp: "2026-08-13T12:00:00Z", cwd: "/work/demo" } },
+    { type: "session_meta", payload: { cwd: "/work/demo", id: "codex-session", timestamp: "2026-08-13T12:00:00Z" } },
     { type: "response_item", timestamp: "2026-08-13T12:00:00Z", payload: { type: "message", role: "user", content: [{ type: "input_text", text: "# AGENTS.md instructions\n\n<INSTRUCTIONS>generated context</INSTRUCTIONS>" }] } },
     { type: "response_item", timestamp: "2026-08-13T12:00:01Z", payload: { type: "message", role: "user", content: [{ type: "input_text", text: "Build the thing" }] } },
     { type: "response_item", timestamp: "2026-08-13T12:00:02Z", payload: { type: "function_call", name: "exec_command", call_id: "call-1", arguments: "{\"cmd\":\"npm test\"}" } },
@@ -30,6 +30,7 @@ test("discovers and maps a Codex session with paired tool output", (context) => 
   assert.equal(sessions.length, 1);
   assert.equal(sessions[0].id, "codex-session");
   assert.equal(sessions[0].title, "Build the thing");
+  assert.equal(adapter.discover({ query: "codex-session" })[0].id, "codex-session");
   const messages = adapter.load(sessions[0]);
   assert.deepEqual(messages.map((message) => message.role), ["user", "tool", "assistant"]);
   assert.equal(messages[1].name, "exec_command");
@@ -73,10 +74,20 @@ test("discovers Codex sessions with large metadata and transcript timestamps", (
   ]);
   fs.utimesSync(file, new Date("2026-08-14T00:00:00Z"), new Date("2026-08-14T00:00:00Z"));
 
+  const archived = path.join(home, "archived_sessions", "archived-copy.jsonl");
+  fs.mkdirSync(path.dirname(archived), { recursive: true });
+  writeJsonl(archived, [
+    { type: "session_meta", payload: { id: "large-session", timestamp: "2026-08-12T12:00:00Z" } },
+    { type: "response_item", timestamp: "2026-08-12T12:01:00Z", payload: { type: "message", role: "user", content: [{ type: "input_text", text: "Old copy" }] } },
+  ]);
+  fs.utimesSync(archived, new Date("2026-08-15T00:00:00Z"), new Date("2026-08-15T00:00:00Z"));
+
   const [session] = createCodexAdapter({ home }).discover();
   assert.equal(session.title, "Find me after the large metadata");
   assert.equal(session.project, "/work/large");
   assert.equal(session.updatedAt, Date.parse("2026-08-13T12:05:00Z"));
+  assert.equal(session.filePath, file);
+  assert.equal(createCodexAdapter({ home }).discover({ query: "large-session" })[0].filePath, file);
 });
 
 test("uses Claude resume metadata, transcript freshness, and excludes sidechains", (context) => {
@@ -179,8 +190,8 @@ test("discovers Pi sessions and renders only the active branch", (context) => {
   assert.equal(sessions[0].id, "019-pi-session");
   assert.equal(sessions[0].title, "Named Pi session");
   assert.equal(sessions[0].project, "/work/exact-pi-project");
-  assert.equal(sessions[0].updatedAt, Date.parse("2026-08-13T12:00:02Z"));
-  assert.equal(sessions[0].messageCount, 4);
+  assert.equal(sessions[0].updatedAt, Date.parse("2026-08-13T12:11:00Z"));
+  assert.equal(sessions[0].messageCount, 2);
   assert.equal(adapter.discover({ query: "019-pi-session" })[0].id, "019-pi-session");
 
   const messages = adapter.load(sessions[0]);
