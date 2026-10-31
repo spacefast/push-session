@@ -12,18 +12,24 @@ function readPayload() {
   return JSON.parse(node.textContent);
 }
 
-function Timeline({ messages }) {
-  const rows = useMemo(() => groupTools(messages), [messages]);
+function Timeline({ messages, loading }) {
+  const rows = useMemo(() => buildRows(messages), [messages]);
+  if (rows.length === 0) {
+    return (
+      <main className="timeline">
+        <div className="empty">{loading ? "Loading the session…" : "Nothing to show. This session has no messages."}</div>
+      </main>
+    );
+  }
   return (
     <main className="timeline">
-      {rows.length === 0 ? <div className="empty">This session has no shareable messages.</div> : null}
       {rows.map((row) =>
         row.kind === "tools" ? (
           <WorkGroupSection key={row.id} entries={row.entries} />
         ) : row.message.itemType === "user_message" ? (
-          <UserTimelineRow key={row.id} message={row.message} />
+          <UserTimelineRow key={row.id} message={row.message} groupedWithNext={row.groupedWithNext} />
         ) : (
-          <AssistantTimelineRow key={row.id} message={row.message} />
+          <AssistantTimelineRow key={row.id} message={row.message} showMeta={row.showMeta} />
         ),
       )}
     </main>
@@ -33,8 +39,8 @@ function Timeline({ messages }) {
 function ArtifactShelf({ artifacts }) {
   if (!artifacts?.length) return null;
   return (
-    <section className="artifact-shelf" aria-label="Session outputs">
-      <div className="artifact-shelf-title">Session outputs</div>
+    <section className="artifact-shelf" aria-label="Outputs">
+      <div className="artifact-shelf-title">Outputs</div>
       <div className="artifact-cards">
         {artifacts.map((artifact) => (
           <a className="artifact-card" href={artifact.href} target="_blank" rel="noreferrer" key={artifact.id}>
@@ -42,8 +48,8 @@ function ArtifactShelf({ artifacts }) {
             <span className="artifact-card-copy">
               <strong>{artifact.title || (artifact.kind === "chatgpt-site" ? "ChatGPT Site" : "Claude artifact")}</strong>
               <small>{artifact.kind === "chatgpt-site"
-                ? `${artifact.publishes} saved version${artifact.publishes === 1 ? "" : "s"} · ${artifact.recoveredVersions} recovered`
-                : `${artifact.recoveredVersions} recovered version${artifact.recoveredVersions === 1 ? "" : "s"}`}</small>
+                ? `${plural(artifact.publishes, "saved version")} · ${artifact.recoveredVersions} recovered`
+                : plural(artifact.recoveredVersions, "version")}</small>
             </span>
             <span className="artifact-arrow" aria-hidden="true">↗</span>
           </a>
@@ -57,17 +63,16 @@ function SessionHeader({ session, stats, artifacts }) {
   return (
     <header className="session-header">
       <div className="topline">
-        <div className="provider"><span className="provider-dot" />{session.providerLabel}</div>
+        <div className="provider">{session.providerLabel}</div>
         <ThemeToggle />
       </div>
       <h1>{session.title || `${session.providerLabel} session`}</h1>
       <div className="session-meta">
-        {session.project ? <span><Icon name="folder" />{session.project}</span> : null}
-        {session.createdAt ? <span><Icon name="calendar" />{longTimestamp(session.createdAt)}</span> : null}
-        <span><Icon name="message" />{stats.messages} messages</span>
-        <span><Icon name="terminal" />{stats.tools} tool calls</span>
-        {stats.artifacts ? <span><Icon name="file" />{stats.artifacts} session output{stats.artifacts === 1 ? "" : "s"}</span> : null}
-        <span title={session.threadId}><Icon name="hash" />{shortId(session.threadId)}</span>
+        {session.project ? <span title={session.project}><Icon name="folder" />{shortProject(session.project)}</span> : null}
+        {session.createdAt ? <span><Icon name="calendar" /><time dateTime={session.createdAt}>{longTimestamp(session.createdAt)}</time></span> : null}
+        <span><Icon name="message" />{plural(stats.messages, "message")}</span>
+        {stats.tools ? <span><Icon name="terminal" />{plural(stats.tools, "tool call")}</span> : null}
+        {stats.artifacts ? <span><Icon name="file" />{plural(stats.artifacts, "output")}</span> : null}
       </div>
       <ArtifactShelf artifacts={artifacts} />
     </header>
@@ -121,21 +126,35 @@ function Icon({ name, className = "" }) {
   return <svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">{paths[name] || paths.tool}</svg>;
 }
 
-function groupTools(messages) {
+// MessagesTimeline.logic: tool calls between messages fold into one work
+// group, back-to-back user messages stack as one burst, and an assistant reply
+// split around tool work shows its copy/model/time row once, on the last part.
+function buildRows(messages) {
   const rows = [];
   let tools = [];
   const flush = () => {
-    if (tools.length > 0) rows.push({ kind: "tools", id: `tools:${rows.length}`, entries: tools });
+    if (tools.length > 0) rows.push({ kind: "tools", id: `tools:${rows.length}:${tools[0].itemId || ""}`, entries: tools });
     tools = [];
   };
   for (const message of mergeWireFragments(messages)) {
     if (isToolItem(message)) tools.push(message);
     else {
       flush();
-      rows.push({ kind: "message", id: message.id || `message:${rows.length}`, message });
+      rows.push({ kind: "message", id: message.itemId || `message:${rows.length}`, message });
     }
   }
   flush();
+  for (let index = 0; index < rows.length; index += 1) {
+    const row = rows[index];
+    if (row.kind !== "message") continue;
+    const next = rows[index + 1];
+    if (row.message.itemType === "user_message") {
+      row.groupedWithNext = next?.kind === "message" && next.message.itemType === "user_message";
+      continue;
+    }
+    const nextUser = rows.slice(index + 1).find((candidate) => candidate.kind === "message");
+    row.showMeta = !nextUser || nextUser.message.itemType === "user_message";
+  }
   return rows;
 }
 
@@ -159,8 +178,17 @@ function mergeWireFragments(messages) {
   return merged;
 }
 
-function shortId(value) {
-  return value.length > 16 ? `${value.slice(0, 8)}…${value.slice(-4)}` : value;
+function plural(count, noun) {
+  const value = Number(count) || 0;
+  return `${value.toLocaleString()} ${noun}${value === 1 ? "" : "s"}`;
+}
+
+function shortProject(value) {
+  const normalized = String(value).replaceAll("\\", "/").replace(/\/$/, "");
+  const home = /^(\/(?:home|Users)\/[^/]+)(\/|$)/.exec(normalized);
+  const display = home ? `~${normalized.slice(home[1].length)}` : normalized;
+  if (display.length <= 52) return display;
+  return `…/${display.split("/").filter(Boolean).slice(-3).join("/")}`;
 }
 
 function longTimestamp(value) {
@@ -190,7 +218,7 @@ function useWirePages(pageUrls) {
       if (!response.ok) throw new Error(`Could not load transcript page ${index + 1} (${response.status}).`);
       const page = await response.json();
       if (page.protocol !== "t3code.provider-runtime/v2" || !Array.isArray(page.events)) {
-        throw new Error(`Transcript page ${index + 1} is not valid T3 wire data.`);
+        throw new Error(`Transcript page ${index + 1} is unreadable.`);
       }
       const completedItems = page.events
         .filter((event) => event?.type === "item.completed" && event.payload)
@@ -222,22 +250,10 @@ function PageSentinel({ loading, error, hasMore, loadNext, loadedPages }) {
   }, [error, hasMore, loadNext, loadedPages]);
 
   if (error) {
-    return <div className="page-status error"><span>{error}</span><button type="button" onClick={loadNext}>Retry</button></div>;
+    return <div className="page-status error" role="alert"><span>{error}</span><button type="button" onClick={loadNext}>Try again</button></div>;
   }
-  if (!hasMore && !loading) return null;
-  return <div ref={ref} className="page-status" aria-live="polite">{loading ? "Loading more of the session…" : "Continue scrolling"}</div>;
-}
-
-function ProvenanceBubble() {
-  return (
-    <aside className="provenance-bubble">
-      <Icon name="info" />
-      <span>
-        What you see is parts of <a href="https://github.com/pingdotgg/t3code" target="_blank" rel="noreferrer">T3 Code</a>.
-        {" "}Where you see it is <a href="https://spacefast.com" target="_blank" rel="noreferrer">Spacefast</a>.
-      </span>
-    </aside>
-  );
+  if (!hasMore || loadedPages === 0) return null;
+  return <div ref={ref} className="page-status" aria-live="polite">{loading ? "Loading more…" : "Scroll for more"}</div>;
 }
 
 function App() {
@@ -247,10 +263,11 @@ function App() {
   return (
     <div className="app-shell">
       <SessionHeader session={payload.session} stats={payload.stats} artifacts={payload.artifacts} />
-      <Timeline messages={items} />
+      <Timeline messages={items} loading={loading || hasMore} />
       <PageSentinel loading={loading} error={error} hasMore={hasMore} loadNext={loadNext} loadedPages={loadedPages} />
-      <footer>Shared with <a href="https://www.npmjs.com/package/push-session" target="_blank" rel="noreferrer">push-session</a></footer>
-      <ProvenanceBubble />
+      <footer className="site-footer">
+        Shared with <a href="https://github.com/spacefast/push-session" target="_blank" rel="noreferrer">push-session</a>
+      </footer>
     </div>
   );
 }

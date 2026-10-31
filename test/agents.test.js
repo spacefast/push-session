@@ -16,23 +16,46 @@ test("discovers and maps a Codex session with paired tool output", (context) => 
   const directory = path.join(home, "sessions", "2026", "08", "13");
   fs.mkdirSync(directory, { recursive: true });
   const file = path.join(directory, "rollout-test.jsonl");
+  const turn = { internal_chat_message_metadata_passthrough: { turn_id: "turn-1" } };
   writeJsonl(file, [
-    { type: "session_meta", payload: { cwd: "/work/demo", id: "codex-session", timestamp: "2026-08-13T12:00:00Z" } },
+    { type: "session_meta", payload: { cwd: "/work/demo", id: "codex-session", timestamp: "2026-08-13T12:00:00Z", source: "cli" } },
+    { type: "turn_context", payload: { model: "gpt-test" } },
     { type: "response_item", timestamp: "2026-08-13T12:00:00Z", payload: { type: "message", role: "user", content: [{ type: "input_text", text: "# AGENTS.md instructions\n\n<INSTRUCTIONS>generated context</INSTRUCTIONS>" }] } },
-    { type: "response_item", timestamp: "2026-08-13T12:00:01Z", payload: { type: "message", role: "user", content: [{ type: "input_text", text: "Build the thing" }] } },
+    { type: "response_item", timestamp: "2026-08-13T12:00:01Z", payload: { type: "message", role: "user", content: [{ type: "input_text", text: "<environment_context>cwd</environment_context>\n## My request for Codex:\nBuild the thing" }], ...turn } },
+    { type: "event_msg", timestamp: "2026-08-13T12:00:01Z", payload: { type: "user_message", message: "Build the thing" } },
+    { type: "response_item", timestamp: "2026-08-13T12:00:01Z", payload: { type: "message", role: "user", content: [{ type: "input_text", text: "Build the thing" }], ...turn } },
     { type: "response_item", timestamp: "2026-08-13T12:00:02Z", payload: { type: "function_call", name: "exec_command", call_id: "call-1", arguments: "{\"cmd\":\"npm test\"}" } },
     { type: "response_item", timestamp: "2026-08-13T12:00:03Z", payload: { type: "function_call_output", call_id: "call-1", output: JSON.stringify({ output: "x".repeat(12_000), exit_code: 0 }) } },
     { type: "response_item", timestamp: "2026-08-13T12:00:04Z", payload: { type: "message", role: "assistant", content: [{ type: "output_text", text: "Done." }] } },
+    { type: "response_item", timestamp: "2026-08-13T12:00:05Z", payload: { type: "message", role: "user", content: [{ type: "input_text", text: "Untracked follow-up" }] } },
+  ]);
+  writeJsonl(path.join(directory, "rollout-subagent.jsonl"), [
+    { type: "session_meta", payload: { id: "subagent-session", source: { subagent: { thread_spawn: { parent_thread_id: "codex-session" } } } } },
+    { type: "response_item", timestamp: "2026-08-13T12:00:01Z", payload: { type: "message", role: "user", content: [{ type: "input_text", text: "Review this" }] } },
+  ]);
+  writeJsonl(path.join(directory, "rollout-context-only.jsonl"), [
+    { type: "session_meta", payload: { id: "context-only" } },
+    { type: "response_item", timestamp: "2026-08-13T12:00:01Z", payload: { type: "message", role: "user", content: [{ type: "input_text", text: "<environment_context>cwd</environment_context>" }] } },
   ]);
 
   const adapter = createCodexAdapter({ home });
   const sessions = adapter.discover();
-  assert.equal(sessions.length, 1);
-  assert.equal(sessions[0].id, "codex-session");
+  assert.deepEqual(sessions.map((session) => session.id), ["codex-session"]);
   assert.equal(sessions[0].title, "Build the thing");
+  assert.equal(sessions[0].model, "gpt-test");
   assert.equal(adapter.discover({ query: "codex-session" })[0].id, "codex-session");
+
+  writeJsonl(path.join(home, "session_index.jsonl"), [
+    { id: "codex-session", thread_name: "Newest rename", updated_at: "2026-08-13T13:00:00Z" },
+    { id: "codex-session", thread_name: "Older rename", updated_at: "2026-08-13T12:30:00Z" },
+  ]);
+  assert.equal(adapter.discover()[0].title, "Newest rename");
+
   const messages = adapter.load(sessions[0]);
-  assert.deepEqual(messages.map((message) => message.role), ["user", "tool", "assistant"]);
+  assert.deepEqual(messages.map((message) => message.role), ["user", "tool", "assistant", "user"]);
+  assert.equal(messages[0].content, "Build the thing", "a prompt logged as event and response items appears once");
+  assert.equal(messages[3].content, "Untracked follow-up");
+  assert.equal(messages[2].model, "gpt-test");
   assert.equal(messages[1].name, "exec_command");
   assert.deepEqual(messages[1].input, { cmd: "npm test" });
   assert.equal(messages[1].output.length, 12_000, "tool output should be preserved for paging");
@@ -90,32 +113,51 @@ test("discovers Codex sessions with large metadata and transcript timestamps", (
   assert.equal(createCodexAdapter({ home }).discover({ query: "large-session" })[0].filePath, file);
 });
 
-test("uses Claude resume metadata, transcript freshness, and excludes sidechains", (context) => {
-  const home = fs.mkdtempSync(path.join(os.tmpdir(), "push-session-claude-index-"));
+test("titles Claude sessions by rename, then AI title, then first real prompt, and skips hidden records", (context) => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), "push-session-claude-titles-"));
   context.after(() => fs.rmSync(home, { recursive: true, force: true }));
   const projectDir = path.join(home, "projects", "-lossy-project-slug");
-  fs.mkdirSync(projectDir, { recursive: true });
-  writeJsonl(path.join(projectDir, "main.jsonl"), [
-    { type: "user", uuid: "one", parentUuid: null, timestamp: "2026-08-13T12:00:00Z", message: { content: "/compact" } },
-    { type: "user", uuid: "two", parentUuid: "one", timestamp: "2026-08-13T12:10:00Z", cwd: "/work/from-transcript", message: { content: "Real prompt" } },
+  fs.mkdirSync(path.join(projectDir, "main", "subagents"), { recursive: true });
+  const prompt = (text, extra = {}) => ({ type: "user", timestamp: "2026-08-13T12:00:00Z", message: { content: text }, ...extra });
+  writeJsonl(path.join(projectDir, "renamed.jsonl"), [
+    prompt("/compact"),
+    prompt("<command-name>/model</command-name>"),
+    prompt("Caveat: injected", { isMeta: true }),
+    prompt("Real prompt\nsecond line", { cwd: "/work/from-transcript" }),
+    { type: "assistant", timestamp: "2026-08-13T12:10:00Z", message: { model: "<synthetic>", content: [{ type: "text", text: "API error" }] } },
+    { type: "custom-title", customTitle: "First rename", sessionId: "renamed" },
+    // Enough filler that the newest title records fall outside the prefix read.
+    ...Array.from({ length: 60 }, (_, index) => ({ type: "progress", timestamp: "2026-08-13T12:10:00Z", data: `${index}:${"x".repeat(40_000)}` })),
+    { type: "ai-title", aiTitle: "Generated title", sessionId: "renamed" },
+    { type: "custom-title", customTitle: "Final rename", sessionId: "renamed" },
   ]);
-  writeJsonl(path.join(projectDir, "side.jsonl"), [
-    { type: "user", isSidechain: true, timestamp: "2026-08-13T13:00:00Z", message: { content: "Subagent prompt" } },
+  writeJsonl(path.join(projectDir, "generated.jsonl"), [
+    prompt("Derived only"),
+    { type: "ai-title", aiTitle: "Generated wins over derived" },
+    { type: "custom-title", customTitle: "Cleared" },
+    { type: "custom-title", customTitle: "" },
   ]);
-  fs.writeFileSync(path.join(projectDir, "sessions-index.json"), JSON.stringify({
-    version: 1,
-    originalPath: "/work/canonical-project",
-    entries: [
-      { sessionId: "main", summary: "Canonical resume title", firstPrompt: "/compact", created: "2026-08-13T12:00:00Z", modified: "2026-08-13T12:05:00Z", projectPath: "/work/canonical-project" },
-      { sessionId: "side", isSidechain: true, modified: "2026-08-13T13:00:00Z" },
-    ],
-  }));
+  writeJsonl(path.join(projectDir, "derived.jsonl"), [
+    prompt("Summary of earlier work", { isCompactSummary: true }),
+    prompt("Derived from the first real prompt"),
+  ]);
+  writeJsonl(path.join(projectDir, "side.jsonl"), [prompt("Subagent prompt", { isSidechain: true })]);
+  writeJsonl(path.join(projectDir, "main", "subagents", "agent-1.jsonl"), [prompt("Nested subagent")]);
 
-  const sessions = createClaudeAdapter({ home }).discover();
-  assert.equal(sessions.length, 1);
-  assert.equal(sessions[0].title, "Canonical resume title");
-  assert.equal(sessions[0].project, "/work/canonical-project");
-  assert.equal(sessions[0].updatedAt, Date.parse("2026-08-13T12:10:00Z"));
+  const adapter = createClaudeAdapter({ home });
+  const sessions = adapter.discover();
+  const titles = Object.fromEntries(sessions.map((session) => [session.id, session.title]));
+  assert.deepEqual(titles, {
+    renamed: "Final rename",
+    generated: "Generated wins over derived",
+    derived: "Derived from the first real prompt",
+  });
+  const renamed = sessions.find((session) => session.id === "renamed");
+  assert.equal(renamed.project, "/work/from-transcript");
+  assert.equal(renamed.model, undefined);
+  assert.equal(renamed.updatedAt, Date.parse("2026-08-13T12:10:00Z"));
+  const derived = adapter.load(sessions.find((session) => session.id === "derived"));
+  assert.deepEqual(derived.map((message) => message.content), ["Derived from the first real prompt"]);
 });
 
 test("discovers modern Gemini JSONL sessions using project and summary metadata", (context) => {
@@ -214,6 +256,9 @@ test("honors Pi's configured flat session directory", (context) => {
   writeJsonl(path.join(sessionDir, "custom.jsonl"), [
     { type: "session", version: 3, id: "custom-pi-session", timestamp: "2026-08-13T12:00:00Z", cwd: "/work/custom" },
     { type: "message", id: "user", parentId: null, timestamp: "2026-08-13T12:01:00Z", message: { role: "user", content: "Custom directory" } },
+    { type: "session_info", id: "named", parentId: "user", name: "Abandoned name" },
+    { type: "session_info", id: "cleared", parentId: "user", name: "" },
+    { type: "message", id: "empty", parentId: "user", timestamp: "2026-08-13T12:02:00Z", message: { role: "assistant", content: null } },
   ]);
   writeJsonl(path.join(sessionDir, "nested", "ignored.jsonl"), [
     { type: "session", version: 3, id: "ignored", timestamp: "2026-08-13T13:00:00Z", cwd: "/work/ignored" },
@@ -221,7 +266,7 @@ test("honors Pi's configured flat session directory", (context) => {
 
   const [session] = createPiAdapter({ home }).discover();
   assert.equal(session.id, "custom-pi-session");
-  assert.equal(session.title, "Custom directory");
+  assert.equal(session.title, "Custom directory", "the latest session_info, even on another branch, clears the name");
 });
 
 function writeJsonl(filePath, entries) {

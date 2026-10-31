@@ -1,32 +1,47 @@
 import os from "node:os";
 
-import * as prompts from "@clack/prompts";
+import * as clack from "@clack/prompts";
 import pc from "picocolors";
 
 import { adapters, findAdapter, scanAgents } from "./agents/index.js";
+import { byRecent } from "./agents/common.js";
 import { parseArgs } from "./args.js";
 import { discoverClaudeSessionArtifacts } from "./artifacts/claude.js";
 import { runArtifacts } from "./artifacts/cli.js";
 import { renderSessionWithArtifacts } from "./artifacts/session.js";
 import { discoverCodexSessionSites } from "./artifacts/sites.js";
-import { configPath, loadConfig, rememberPublishResult, selectPublishState } from "./config.js";
-import { publishSession } from "./spacefast.js";
+import { resolveAuth } from "./auth.js";
+import {
+  configPath,
+  loadConfig,
+  ownedSpaceFor,
+  rememberOwnedSpace,
+  rememberPublishResult,
+  resolveApiUrl,
+  selectPublishState,
+} from "./config.js";
+import { listSpaces, publishSession } from "./spacefast.js";
 import { packageVersion } from "./version.js";
+
+export const OWNED_SPACE_TITLE = "AI sessions";
+const NEW_SPACE = Symbol("new-space");
+const AUTOCOMPLETE_AFTER = 8;
 
 export async function run(argv = process.argv.slice(2), dependencies = {}) {
   if (argv[0] === "artifacts") return runArtifacts(argv.slice(1), dependencies);
-  const parsed = parseArgs(argv, dependencies.env || process.env);
+  const env = dependencies.env || process.env;
+  const parsed = parseArgs(argv, env);
   if (parsed.options.help) return printHelp();
   if (parsed.options.version) return console.log(packageVersion);
   const log = dependencies.log || console.log;
-  const env = dependencies.env || process.env;
-  const interactive = Boolean(process.stdin.isTTY && process.stdout.isTTY && !parsed.options.json);
+  const prompts = dependencies.prompts || clack;
+  const interactive = dependencies.interactive ?? Boolean(process.stdin.isTTY && process.stdout.isTTY && !parsed.options.json);
   const warn = dependencies.warn || ((message) => {
     if (interactive) prompts.log.warn(message);
     else console.error(`Warning: ${message}`);
   });
   if (!parsed.agent && !interactive) {
-    throw new Error("Choose an agent in non-interactive mode, for example: npx push-session codex <session-id>");
+    throw new Error("Pick an agent when there's no terminal to ask in, e.g. npx push-session codex <session-id>");
   }
   if (interactive) prompts.intro(pc.bgGreen(pc.black(" push-session ")));
 
@@ -37,9 +52,10 @@ export async function run(argv = process.argv.slice(2), dependencies = {}) {
     interactive,
     limit: parsed.options.limit,
     availableAdapters,
+    prompts,
   });
   const messages = await selection.adapter.load(selection.session);
-  if (messages.length === 0) throw new Error("The selected session has no shareable messages.");
+  if (messages.length === 0) throw new Error("That session has nothing to share yet.");
 
   let artifacts = [];
   let sites = [];
@@ -81,7 +97,7 @@ export async function run(argv = process.argv.slice(2), dependencies = {}) {
     if (parsed.options.json) log(JSON.stringify(result));
     else {
       prompts.note(`${result.messages} transcript entries\n${result.pages} JSON page${result.pages === 1 ? "" : "s"}\n${result.artifacts} Claude artifact${result.artifacts === 1 ? "" : "s"}\n${result.sites} ChatGPT Site${result.sites === 1 ? "" : "s"}\n${result.bytes.toLocaleString()} bytes\n${result.route}`, "Ready to publish");
-      prompts.outro("Dry run complete. Nothing was uploaded.");
+      prompts.outro("Dry run. Nothing left your machine.");
     }
     return result;
   }
@@ -95,10 +111,186 @@ export async function run(argv = process.argv.slice(2), dependencies = {}) {
     config = { version: 1 };
     configReadable = false;
   }
+
+  const apiUrl = resolveApiUrl(config, parsed.options);
+  const auth = await (dependencies.resolveAuth || resolveAuth)({ env, apiUrl, keyring: dependencies.keyring });
+  const context = { parsed, config, configReadable, apiUrl, auth, env, interactive, prompts, warn, dependencies, selection, bundle };
+  const result = auth ? await publishOwned(context) : await publishAnonymous(context);
+
+  const output = {
+    agent: selection.adapter.id,
+    sessionId: selection.session.id,
+    title: selection.session.title,
+    url: result.shareUrl,
+    landingUrl: result.landingUrl,
+    pages: bundle.pageCount,
+    artifacts: bundle.artifactCount,
+    artifactVersions: bundle.artifactVersions,
+    sites: bundle.siteCount,
+    siteVersions: bundle.siteVersions,
+    recoveredSiteVersions: bundle.recoveredSiteVersions,
+    versionUrl: result.versionUrl,
+    spaceId: result.space.id,
+    spaceTitle: result.space.title || null,
+    claimUrl: result.space.claimUrl,
+    claimExpiresAt: result.space.expiresAt,
+  };
+  if (parsed.options.json) {
+    log(JSON.stringify(output));
+  } else {
+    (dependencies.write || ((text) => process.stdout.write(text)))(formatShareLinks(output));
+    if (output.claimUrl) {
+      prompts.outro("Claim the Space to keep these links. Or run `sf login` once and sessions land in your own Space.");
+    } else {
+      prompts.outro("Shipped.");
+    }
+  }
+  return output;
+}
+
+async function publishOwned(context) {
+  const { parsed, config, configReadable, apiUrl, auth, env, interactive, prompts, warn, dependencies, selection, bundle } = context;
+  const fetchImpl = dependencies.fetchImpl;
+  const api = { apiUrl, accessToken: auth.accessToken, fetchImpl };
+  const remember = (space) => {
+    if (!configReadable) return;
+    try {
+      rememberOwnedSpace(config, apiUrl, space, env);
+    } catch (error) {
+      warn(`${error.message} Published fine, but your default Space wasn't saved.`);
+    }
+  };
+
+  // --space is a one-off: publish there, keep the saved default.
+  let target = null;
+  let saveTarget = false;
+  if (parsed.options.space) {
+    target = { id: parsed.options.space, title: null };
+  } else if (parsed.options.newSpace) {
+    target = { id: null, title: OWNED_SPACE_TITLE };
+    saveTarget = true;
+  } else {
+    const saved = parsed.options.pickSpace ? null : ownedSpaceFor(config, apiUrl);
+    if (saved) {
+      target = saved;
+    } else if (interactive) {
+      target = await pickSpace({ api, prompts, message: "Where should your sessions live?" });
+      saveTarget = true;
+    } else {
+      const [existing] = (await listSpaces({ ...api, query: OWNED_SPACE_TITLE })).filter((space) => space.title === OWNED_SPACE_TITLE);
+      target = existing ? { id: existing.id, title: existing.title, liveUrl: existing.liveUrl } : { id: null, title: OWNED_SPACE_TITLE };
+      saveTarget = true;
+    }
+  }
+
+  const publish = (space, teamId) => {
+    const spinner = interactive ? prompts.spinner() : null;
+    spinner?.start(space.id ? `Publishing to ${space.title || space.id}` : `Creating ${space.title} and publishing`);
+    return publishSession({
+      session: selection.session,
+      files: bundle.files,
+      entryPath: bundle.entryPath,
+      basePath: bundle.basePath,
+      apiUrl,
+      spaceId: space.id,
+      spaceTitle: space.id ? undefined : space.title,
+      teamId: space.id ? undefined : teamId || parsed.options.team,
+      access: space.id ? undefined : "private",
+      accessToken: auth.accessToken,
+      fetchImpl,
+    }).then(
+      (result) => {
+        spinner?.stop(`Published to ${result.space.title || space.title || result.space.id}`);
+        return result;
+      },
+      (error) => {
+        spinner?.error("Publish failed");
+        throw error;
+      },
+    );
+  };
+
+  let result;
+  for (let attempt = 0; ; attempt += 1) {
+    try {
+      result = await publish(target);
+      break;
+    } catch (error) {
+      if (!target.id && error?.code === "team_required" && interactive && attempt === 0) {
+        const teamId = await pickTeam({ prompts, teams: error.details?.teams || [] });
+        result = await publish(target, teamId);
+        break;
+      }
+      if (!target.id && error?.code === "team_required") {
+        const slugs = (error.details?.teams || []).map((team) => team.slug).join(", ");
+        throw new Error(`You're in more than one team. Choose one with --team <slug>${slugs ? ` (${slugs})` : ""}.`);
+      }
+      if (error?.status === 401) {
+        throw new Error(auth.source === "sf"
+          ? "Your sf login was rejected. Run `sf login` again."
+          : "SPACEFAST_TOKEN was rejected. Check the token or unset it.");
+      }
+      const gone = target.id && [403, 404].includes(error?.status);
+      if (gone && parsed.options.space) {
+        throw new Error(`Space "${parsed.options.space}" isn't one you can publish to.`);
+      }
+      if (!gone) throw error;
+      if (!interactive || attempt > 0) {
+        throw new Error(`Your saved Space "${target.title || target.id}" is gone or no longer yours. Pick another with --pick-space, or publish once with --space <id>.`);
+      }
+      warn(`Your saved Space "${target.title || target.id}" is gone or no longer yours. Pick a new home.`);
+      target = await pickSpace({ api, prompts, message: "Where should your sessions live now?" });
+      saveTarget = true;
+    }
+  }
+
+  if (saveTarget) {
+    remember({ id: result.space.id, title: result.space.title || target.title, liveUrl: result.space.liveUrl });
+  }
+  if (!result.space.title) result.space.title = target.title || null;
+  return result;
+}
+
+async function pickSpace({ api, prompts, message }) {
+  const spaces = await listSpaces(api);
+  const options = [
+    { value: NEW_SPACE, label: `New Space · ${OWNED_SPACE_TITLE}`, hint: "private to your team" },
+    ...spaces.map((space) => ({
+      value: space.id,
+      label: space.title || space.slug,
+      hint: [space.teamSlug, hostOf(space.liveUrl) || space.slug].filter(Boolean).join(" · "),
+    })),
+  ];
+  const choose = options.length > AUTOCOMPLETE_AFTER ? prompts.autocomplete : prompts.select;
+  const value = await choose({
+    message,
+    options,
+    maxItems: 10,
+    ...(choose === prompts.autocomplete && { placeholder: "Type to search your Spaces", filter: matchesOption }),
+  });
+  cancelIfNeeded(prompts, value);
+  if (value === NEW_SPACE) return { id: null, title: OWNED_SPACE_TITLE };
+  const space = spaces.find((item) => item.id === value);
+  return { id: space.id, title: space.title, liveUrl: space.liveUrl };
+}
+
+async function pickTeam({ prompts, teams }) {
+  if (teams.length === 0) throw new Error("Spacefast needs a team for the new Space. Pass --team <slug>.");
+  const value = await prompts.select({
+    message: "Which team owns the new Space?",
+    options: teams.map((team) => ({ value: team.id, label: team.name || team.slug, hint: team.slug })),
+  });
+  cancelIfNeeded(prompts, value);
+  return value;
+}
+
+async function publishAnonymous(context) {
+  const { parsed, config, configReadable, env, interactive, prompts, warn, dependencies, selection, bundle } = context;
   const state = selectPublishState(config, parsed.options, env);
+  if (interactive && !state.spaceId) prompts.log.info("Not signed in, so this goes to a claimable Space. `sf login` puts sessions in your own.");
 
   const spinner = interactive ? prompts.spinner() : null;
-  spinner?.start(state.spaceId ? "Publishing to your session space" : "Creating your session space");
+  spinner?.start(state.spaceId ? "Publishing to your session Space" : "Creating your session Space");
   const publish = ({ spaceId, accessToken: publishAccessToken, claimToken }) => publishSession({
     session: selection.session,
     files: bundle.files,
@@ -124,17 +316,12 @@ export async function run(argv = process.argv.slice(2), dependencies = {}) {
       throw error;
     }
     warn("The saved session space is no longer reusable. Creating a new global session space.");
-    spinner?.message("Creating a new session space");
-    const fallbackAccessToken = env.SPACEFAST_TOKEN && error?.status !== 401 ? env.SPACEFAST_TOKEN : null;
+    spinner?.message("Creating a new session Space");
     try {
-      result = await publish({ spaceId: null, accessToken: fallbackAccessToken, claimToken: null });
-    } catch (fallbackError) {
-      if (!fallbackAccessToken || fallbackError?.stage !== "initial_publish" || fallbackError?.status !== 401) {
-        spinner?.stop("Publish failed");
-        throw fallbackError;
-      }
-      warn("SPACEFAST_TOKEN was rejected. Continuing with an anonymous session space.");
       result = await publish({ spaceId: null, accessToken: null, claimToken: null });
+    } catch (fallbackError) {
+      spinner?.stop("Publish failed");
+      throw fallbackError;
     }
     spinner?.stop("Session published");
   }
@@ -146,36 +333,14 @@ export async function run(argv = process.argv.slice(2), dependencies = {}) {
       warn(`${error.message} This publish succeeded, but global space reuse could not be saved.`);
     }
   }
-
-  const output = {
-    agent: selection.adapter.id,
-    sessionId: selection.session.id,
-    title: selection.session.title,
-    url: result.shareUrl,
-    landingUrl: result.landingUrl,
-    pages: bundle.pageCount,
-    artifacts: bundle.artifactCount,
-    artifactVersions: bundle.artifactVersions,
-    sites: bundle.siteCount,
-    siteVersions: bundle.siteVersions,
-    recoveredSiteVersions: bundle.recoveredSiteVersions,
-    versionUrl: result.versionUrl,
-    spaceId: result.space.id,
-    claimUrl: result.space.claimUrl,
-    claimExpiresAt: result.space.expiresAt,
-  };
-  if (parsed.options.json) {
-    log(JSON.stringify(output));
-  } else {
-    process.stdout.write(formatShareLinks(output));
-    prompts.outro(output.claimUrl ? "Claim the space to keep these links permanently." : "Done.");
-  }
-  return output;
+  return result;
 }
 
 export function formatShareLinks(output) {
   const fields = [
-    ["Access", output.url || "Published"],
+    output.title && ["Session", output.title],
+    ["Link", output.url || "Published"],
+    (output.spaceTitle || output.spaceId) && ["Space", output.spaceTitle || output.spaceId],
     output.versionUrl && ["Version", output.versionUrl],
     output.claimUrl && ["Claim", output.claimUrl],
     output.claimExpiresAt && ["Expires", formatDate(output.claimExpiresAt)],
@@ -193,67 +358,77 @@ function canReplaceSavedSpace(error) {
   return error?.stage === "initial_publish" && [401, 403, 404].includes(error?.status);
 }
 
-async function selectAgentAndSession({ requestedAgent, requestedSession, interactive, limit, availableAdapters }) {
-  let adapter = requestedAgent ? findAdapter(requestedAgent, availableAdapters) : null;
-  let sessions;
+async function selectAgentAndSession({ requestedAgent, requestedSession, interactive, limit, availableAdapters, prompts }) {
+  const adapter = requestedAgent ? findAdapter(requestedAgent, availableAdapters) : null;
   if (requestedAgent && !adapter) {
-    throw new Error(`Unknown agent "${requestedAgent}". Supported agents: ${availableAdapters.map((item) => item.id).join(", ")}.`);
+    throw new Error(`Unknown agent "${requestedAgent}". Try one of: ${availableAdapters.map((item) => item.id).join(", ")}.`);
   }
 
-  if (!adapter) {
-    const found = scanAgents(availableAdapters, { limit });
-    if (found.length === 0) throw new Error("No supported agent sessions were found on this machine.");
-    const value = await prompts.select({
-      message: "Which agent has the session?",
-      options: found.map((entry) => ({
-        value: entry.adapter.id,
-        label: entry.adapter.label,
-        hint: `${entry.sessions.length} session${entry.sessions.length === 1 ? "" : "s"}`,
-      })),
-    });
-    cancelIfNeeded(value);
-    const selected = found.find((entry) => entry.adapter.id === value);
-    adapter = selected.adapter;
-    sessions = selected.sessions;
+  let sessions;
+  if (adapter) {
+    if (!adapter.installed()) throw new Error(`${adapter.label} doesn't look installed here.`);
+    sessions = adapter.discover({ limit: requestedSession ? Infinity : limit, query: requestedSession })
+      .map((session) => ({ session, adapter }));
+    if (sessions.length === 0) throw new Error(`No ${adapter.label} sessions here yet.`);
   } else {
-    if (!adapter.installed()) throw new Error(`${adapter.label} does not appear to be installed.`);
-    sessions = adapter.discover({ limit: requestedSession ? Infinity : limit, query: requestedSession });
+    sessions = scanAgents(availableAdapters, { limit })
+      .flatMap((entry) => entry.sessions.map((session) => ({ session, adapter: entry.adapter })))
+      .sort((left, right) => byRecent(left.session, right.session));
+    if (sessions.length === 0) throw new Error("No agent sessions found on this machine. Run Codex, Claude Code, Gemini CLI, Cursor Agent, or Pi first.");
   }
 
-  if (sessions.length === 0) throw new Error(`No ${adapter.label} sessions were found.`);
-  let session;
   if (requestedSession) {
-    session = resolveSession(sessions, requestedSession);
-  } else {
-    if (!interactive) throw new Error(`Choose a session ID in non-interactive mode: npx push-session ${adapter.id} <session-id>`);
-    const visible = sessions.slice(0, limit);
-    const value = await prompts.select({
-      message: `Which ${adapter.label} session should be shared?`,
-      options: visible.map((item) => ({
-        value: item.id,
-        label: item.title,
-        hint: [relativeDate(item.updatedAt || item.createdAt), shortProject(item.project), shortId(item.id)].filter(Boolean).join(" · "),
-      })),
-      maxItems: 12,
-    });
-    cancelIfNeeded(value);
-    session = visible.find((item) => item.id === value);
+    return resolveSession(sessions, requestedSession);
   }
-  return { adapter, session };
+  if (!interactive) throw new Error(`Pass a session ID when there's no terminal to ask in: npx push-session ${adapter.id} <session-id>`);
+  const visible = sessions.slice(0, adapter ? limit : Math.max(limit, 200));
+  const options = visible.map((entry, index) => ({
+    value: index,
+    label: entry.session.title,
+    hint: [
+      adapter ? null : entry.adapter.label,
+      relativeDate(entry.session.updatedAt || entry.session.createdAt),
+      shortProject(entry.session.project),
+      shortId(entry.session.id),
+    ].filter(Boolean).join(" · "),
+    search: [entry.session.title, entry.session.project, entry.session.id, entry.adapter.label, entry.adapter.id].filter(Boolean).join(" "),
+  }));
+  const value = await prompts.autocomplete({
+    message: adapter ? `Which ${adapter.label} session?` : "Which session do you want to share?",
+    placeholder: "Type to search by title, project, agent, or ID",
+    options,
+    filter: matchesOption,
+    maxItems: 12,
+  });
+  cancelIfNeeded(prompts, value);
+  return visible[value];
+}
+
+function matchesOption(search, option) {
+  const haystack = (option.search || `${option.label || ""} ${option.hint || ""}`).toLowerCase();
+  return search.toLowerCase().split(/\s+/).filter(Boolean).every((term) => haystack.includes(term));
+}
+
+function hostOf(value) {
+  try {
+    return new URL(value).host;
+  } catch {
+    return null;
+  }
 }
 
 function resolveSession(sessions, query) {
-  const exact = sessions.find((session) => session.id === query);
+  const exact = sessions.find((entry) => entry.session.id === query);
   if (exact) return exact;
-  const matches = sessions.filter((session) => session.id.startsWith(query));
+  const matches = sessions.filter((entry) => entry.session.id.startsWith(query));
   if (matches.length === 1) return matches[0];
   if (matches.length > 1) throw new Error(`Session ID prefix "${query}" is ambiguous (${matches.length} matches).`);
   throw new Error(`Session "${query}" was not found.`);
 }
 
-function cancelIfNeeded(value) {
+function cancelIfNeeded(prompts, value) {
   if (!prompts.isCancel(value)) return;
-  prompts.cancel("No session was published.");
+  prompts.cancel("Nothing published.");
   process.exit(0);
 }
 
@@ -292,12 +467,12 @@ function formatDate(value) {
 function printHelp() {
   console.log(`push-session ${packageVersion}
 
-Share local AI coding-agent sessions through Spacefast.
+Share your AI coding-agent sessions as private Spacefast links.
 
 Usage
-  npx push-session
-  npx push-session <agent>
-  npx push-session <agent> <session-id>
+  npx push-session                       Pick any session from any agent
+  npx push-session <agent>               Pick from one agent
+  npx push-session <agent> <session-id>  Share that one, no questions
   npx push-session artifacts <list|export|publish>
 
 Agents
@@ -307,18 +482,25 @@ Agents
   cursor         Cursor Agent
   pi             Pi coding agent
 
+Where sessions go
+  Signed in (sf login or SPACEFAST_TOKEN): the first run asks which of your
+  Spaces gets your sessions and remembers it. Signed out: a claimable Space
+  that lives on this machine until you claim it.
+
 Options
-  --space <id>   Publish to a specific Spacefast space
-  --new-space    Create and remember a new session space
-  --limit <n>    Sessions shown in the picker (default: 50)
-  --dry-run      Parse and render without uploading
+  --pick-space   Choose your sessions Space again
+  --space <id>   Publish to this Space once; your default stays put
+  --new-space    Start a fresh "${OWNED_SPACE_TITLE}" Space and make it the default
+  --team <slug>  Team for a new Space, if you're in more than one
+  --limit <n>    Sessions shown per agent in the picker (default: 50)
+  --dry-run      Render everything, upload nothing
   --json         Print one machine-readable result
   --api-url      Override the Spacefast API origin
   -h, --help     Show help
   -v, --version  Show version
 
 Environment
-  SPACEFAST_TOKEN      Publish to an owned space
+  SPACEFAST_TOKEN      Publish as this credential instead of your sf login
   SPACEFAST_API_URL    Override the Spacefast API origin
-  PUSH_SESSION_CONFIG Override the config file path`);
+  PUSH_SESSION_CONFIG  Override the config file path`);
 }

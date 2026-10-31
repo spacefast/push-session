@@ -1,4 +1,4 @@
-const VALUE_FLAGS = new Set(["--space", "--api-url", "--limit"]);
+const VALUE_FLAGS = new Set(["--space", "--team", "--api-url", "--limit"]);
 
 export function parseArgs(argv, env = process.env) {
   const options = {
@@ -8,7 +8,9 @@ export function parseArgs(argv, env = process.env) {
     json: false,
     limit: 50,
     newSpace: false,
+    pickSpace: false,
     space: undefined,
+    team: undefined,
     version: false,
   };
   const positionals = [];
@@ -28,6 +30,7 @@ export function parseArgs(argv, env = process.env) {
     else if (value === "--json") options.json = true;
     else if (value === "--dry-run") options.dryRun = true;
     else if (value === "--new-space") options.newSpace = true;
+    else if (value === "--pick-space") options.pickSpace = true;
     else if (value.includes("=")) {
       const [flag, ...rest] = value.split("=");
       if (!VALUE_FLAGS.has(flag)) throw new Error(`Unknown option: ${flag}`);
@@ -45,8 +48,9 @@ export function parseArgs(argv, env = process.env) {
   if (positionals.length > 2) {
     throw new Error("Expected at most an agent and a session ID.");
   }
-  if (options.newSpace && options.space) {
-    throw new Error("--new-space and --space cannot be used together.");
+  const spaceChoices = [options.space && "--space", options.newSpace && "--new-space", options.pickSpace && "--pick-space"].filter(Boolean);
+  if (spaceChoices.length > 1) {
+    throw new Error(`${spaceChoices.join(" and ")} cannot be used together.`);
   }
 
   if (options.apiUrl) options.apiUrl = apiOrigin(options.apiUrl);
@@ -57,6 +61,7 @@ export function parseArgs(argv, env = process.env) {
 function assignValue(options, flag, value) {
   if (!value) throw new Error(`${flag} requires a value.`);
   if (flag === "--space") options.space = value;
+  if (flag === "--team") options.team = value;
   if (flag === "--api-url") options.apiUrl = value;
   if (flag === "--limit") {
     const limit = Number(value);

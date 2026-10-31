@@ -33,6 +33,9 @@ function App() {
       <main>
         <ChatMarkdown text={artifact.source} className="markdown" />
       </main>
+      <footer>
+        Shared with <a href="https://github.com/spacefast/push-session" target="_blank" rel="noreferrer">push-session</a>
+      </footer>
     </div>
   );
 }

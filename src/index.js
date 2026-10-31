@@ -7,4 +7,5 @@ export { discoverCodexSessionSites, parseCodexSitesTranscript } from "./artifact
 export { renderChatGptSitesBundle } from "./artifacts/sites-render.js";
 export { writeArtifactBundle } from "./artifacts/files.js";
 export { createSharePath, renderSession, renderSessionBundle, toT3WireItem } from "./render.js";
-export { publishSession } from "./spacefast.js";
+export { resolveAuth } from "./auth.js";
+export { listSpaces, publishSession } from "./spacefast.js";

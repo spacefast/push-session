@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 
+import { describeToolCall } from "../vendor/t3code-viewer/t3/workLogPresentation.js";
 import { viewerScript, viewerStyles } from "./viewer-assets.js";
 
 const DEFAULT_PAGE_BYTES = 256 * 1024;
@@ -12,6 +13,7 @@ export function renderSessionBundle(session, messages, options = {}) {
   const sourceItems = messages.map((message, index) => toT3WireItem(message, index, {
     provider: session.agent,
     threadId: session.id,
+    project: session.project,
   }));
   const items = sourceItems.flatMap((item) => splitWireItem(item, Math.max(1_024, maxBytes - 512)));
   const itemPages = partitionItems(items, {
@@ -99,8 +101,14 @@ export function toT3WireItem(message, index, context = {}) {
     ? toolDetail(message)
     : String(message.content || "");
   const title = message.role === "tool" ? String(message.name || "Tool call") : undefined;
+  const tool = message.role === "tool"
+    ? describeToolCall({ itemType, name: message.name, input: message.input, summary: message.summary, command: message.command, project: context.project })
+    : null;
   const data = compactObject({
     name: message.name,
+    label: tool?.label,
+    action: tool?.action,
+    paths: tool?.paths?.length ? tool.paths : undefined,
     model: message.model,
     command: message.command,
     summary: message.summary,
@@ -195,7 +203,8 @@ function toolDetail(message) {
 }
 
 function renderShellHtml(session, payload) {
-  const title = escapeHtml(session.title || `${session.agentLabel} session`);
+  const agentLabel = session.agentLabel || "Agent";
+  const title = escapeHtml(`${session.title || `${agentLabel} session`} · ${agentLabel}`);
   return `<!doctype html>
 <html lang="en">
 <head>
@@ -203,7 +212,7 @@ function renderShellHtml(session, payload) {
   <meta name="viewport" content="width=device-width,initial-scale=1">
   <meta name="robots" content="noindex,nofollow">
   <meta name="color-scheme" content="light dark">
-  <title>${title} · push-session</title>
+  <title>${title}</title>
   <style>${safeStyle(viewerStyles)}</style>
 </head>
 <body>
@@ -233,14 +242,15 @@ function partitionItems(items, { maxBytes, maxItems }) {
   return pages;
 }
 
+// Provider-runtime lifecycle item type for a transcript tool name.
 function toolItemType(name) {
   const value = String(name || "").toLowerCase();
+  if (/^mcp__|^mcp_/.test(value)) return "mcp_tool_call";
   if (/exec|shell|bash|command|terminal/.test(value)) return "command_execution";
-  if (/patch|write|edit|file_change/.test(value)) return "file_change";
+  if (/patch|write|edit|file_change|str_replace|replace/.test(value)) return "file_change";
   if (/web|search_query|image_query/.test(value)) return "web_search";
   if (/view_image|image_view/.test(value)) return "image_view";
-  if (/collab|spawn_agent|send_message|wait_agent/.test(value)) return "collab_agent_tool_call";
-  if (/^mcp|mcp_/.test(value)) return "mcp_tool_call";
+  if (/collab|spawn_agent|send_input|send_message|wait_agent|^task$|^agent$/.test(value)) return "collab_agent_tool_call";
   return "dynamic_tool_call";
 }
 

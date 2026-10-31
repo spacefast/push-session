@@ -32,11 +32,11 @@ test("renders a small T3-wire shell with transcript data in bounded JSON pages",
   assert.equal(bundle.entryPath, "sessions/11111111-1111-4111-8111-111111111111/22222222-2222-4222-8222-222222222222/index.html");
   const html = bundle.files[0].content;
   assert.match(html, /id="push-session-data"/);
-  assert.match(html, /A &lt;great&gt; session/);
+  assert.match(html, /<title>A &lt;great&gt; session · Codex<\/title>/);
   assert.doesNotMatch(html, /Hello <\/script>/);
   assert.doesNotMatch(html, /alert\(1\)/, "transcript content should not be embedded in the shell");
-  assert.match(html, /T3 Code/);
-  assert.match(html, /Spacefast/);
+  assert.match(html, /https:\/\/github\.com\/spacefast\/push-session/);
+  assert.doesNotMatch(html, /github\.com\/pingdotgg|What you see is parts of/);
   assert.ok(html.length > 100_000, "viewer bundle should be embedded");
 
   const firstPage = JSON.parse(bundle.files[1].content);
@@ -46,6 +46,8 @@ test("renders a small T3-wire shell with transcript data in bounded JSON pages",
   assert.equal(firstPage.events[0].payload.itemType, "user_message");
   assert.equal(toolPage.events[0].payload.itemType, "command_execution");
   assert.match(toolPage.events[0].payload.detail, /Input\n\{\n  "cmd": "npm test"/);
+  assert.equal(toolPage.events[0].payload.data.label, "npm test");
+  assert.equal(toolPage.events[0].payload.data.action, "command");
 });
 
 test("uses the session ID as the single route segment", () => {
@@ -72,7 +74,7 @@ test("maps adapters into T3 provider-runtime wire language", () => {
         status: "failed",
         title: "apply_patch",
         detail: "Input\npatch\n\nOutput\ndone",
-        data: { name: "apply_patch" },
+        data: { name: "apply_patch", label: "Edited files", action: "edit" },
       },
     },
   );
@@ -95,4 +97,15 @@ test("splits a single giant wire item without dropping its data", () => {
   const events = bundle.files.slice(1).flatMap((file) => JSON.parse(file.content).events);
   assert.equal(events.map((event) => event.payload.detail).join(""), `Output\n${marker}`);
   assert.ok(bundle.files.slice(1).every((file) => Buffer.byteLength(file.content) < 33 * 1024));
+});
+
+test("labels tool calls with T3 Code's work-log vocabulary", () => {
+  const label = (message) => toT3WireItem({ role: "tool", ...message }, 0, { project: "/work" }).payload.data;
+  assert.deepEqual(label({ name: "Read", input: { file_path: "/work/src/app.js" } }), {
+    name: "Read", label: "Read src/app.js", action: "read", paths: ["src/app.js"],
+  });
+  assert.equal(label({ name: "Grep", input: { pattern: "TODO", path: "/work/src" } }).label, "Searched TODO in src");
+  assert.equal(label({ name: "exec_command", input: { cmd: ["bash", "-lc", "npm test"] } }).label, "npm test");
+  assert.equal(label({ name: "mcp__github__create_issue", input: {} }).label, "github: create issue");
+  assert.equal(label({ name: "apply_patch", input: "*** Begin Patch\n*** Update File: a.js\n*** Update File: b.js\n" }).label, "Edited a.js +1 more");
 });

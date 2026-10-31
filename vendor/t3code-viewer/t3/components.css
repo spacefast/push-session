@@ -1,7 +1,4 @@
-.work-status.neutral {
-  color: var(--muted-foreground);
-}
-
+/* Component-level rules the viewer entrypoint shares with the artifact viewer. */
 .code-title {
   padding: 6px 46px 5px 12px;
   border: 1px solid var(--border);
@@ -9,7 +6,7 @@
   border-radius: 10px 10px 0 0;
   background: var(--secondary);
   color: var(--muted-foreground);
-  font: 11px/1.5 "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
+  font: 11px/1.5 var(--font-mono, ui-monospace, "SFMono-Regular", Menlo, monospace);
 }
 
 .code-title + pre {

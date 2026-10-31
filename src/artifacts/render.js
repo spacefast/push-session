@@ -139,9 +139,9 @@ function renderGallery(manifest) {
   </style>
 </head>
 <body><main>
-  <header><span class="eyebrow">push-session recovery</span><h1>Claude artifacts,<br>back in your hands.</h1><p>Recovered from local Claude Code transcripts and file history. Original source files are stored beside each rendered page.</p></header>
+  <header><span class="eyebrow">Recovered Claude artifacts</span><h1>Claude artifacts</h1><p>Rebuilt from local Claude Code transcripts and file history. Each page keeps its original source file beside it.</p></header>
   <section class="grid">${cards || "<p>No artifacts were found.</p>"}</section>
-  <footer>Exported ${escapeHtml(manifest.exportedAt)} · <a href="manifest.json">manifest.json</a></footer>
+  <footer>Exported ${escapeHtml(manifest.exportedAt)} with <a href="https://github.com/spacefast/push-session" target="_blank" rel="noreferrer">push-session</a> · <a href="manifest.json">manifest.json</a></footer>
 </main></body>
 </html>`;
 }

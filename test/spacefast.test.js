@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { publishSession, sessionRoute } from "../src/spacefast.js";
+import { listSpaces, publishSession, sessionRoute } from "../src/spacefast.js";
 import { packageVersion } from "../src/version.js";
 
 test("builds a session route from one sanitized session ID", () => {
@@ -100,6 +100,23 @@ test("updates a selected space with bearer authentication", async () => {
   assert.equal(requests[0].init.headers.authorization, "Bearer token-value");
   assert.equal(JSON.parse(requests[0].init.body.get("payload")).spaceId, "spc_saved");
   assert.equal(requests[1].init.headers.authorization, "Bearer token-value");
+});
+
+test("lists only owned Spaces and surfaces problem details", async () => {
+  const urls = [];
+  const fetchImpl = async (url, init) => {
+    urls.push({ url: String(url), authorization: init.headers.authorization });
+    if (urls.length === 1) {
+      return jsonResponse(200, { data: [{ id: "spc_team", title: "Notes", anonymous: false }, { id: "spc_anon", title: "Claimable", anonymous: true }] });
+    }
+    return jsonResponse(403, { title: "Forbidden", detail: "Missing spaces:read.", code: "forbidden", details: { scope: "spaces:read" } });
+  };
+  const spaces = await listSpaces({ apiUrl: "https://api.example", accessToken: "token-value", query: "Notes", fetchImpl });
+  assert.deepEqual(spaces.map((space) => space.id), ["spc_team"]);
+  assert.equal(urls[0].url, "https://api.example/v1/spaces?limit=100&query=Notes");
+  assert.equal(urls[0].authorization, "Bearer token-value");
+  await assert.rejects(listSpaces({ apiUrl: "https://api.example", accessToken: "token-value", fetchImpl }), (error) =>
+    error.message === "Missing spaces:read." && error.status === 403 && error.details.scope === "spaces:read");
 });
 
 test("exchanges a claimed anonymous key and continues on the same space", async () => {
