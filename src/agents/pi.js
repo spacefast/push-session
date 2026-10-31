@@ -6,9 +6,11 @@ import {
   byRecent,
   cleanTitle,
   contentText,
+  deriveTitle,
   exists,
   fileStats,
   isBootstrapMessage,
+  isSyntheticUserText,
   readJsonLines,
   safeJson,
   timestamp,
@@ -97,21 +99,26 @@ function inspectPiSession(filePath) {
   if (header?.type !== "session") return null;
 
   const branch = activePiBranch(entries);
-  let name;
   let firstMessage;
+  let hasUserMessage = false;
   let messageCount = 0;
   let lastActivity;
   for (const entry of branch) {
     const activity = timestamp(entry.timestamp);
     if (activity !== null) lastActivity = Math.max(lastActivity || 0, activity);
-    if (entry.type === "session_info") name = cleanTitle(entry.name) || undefined;
     if (entry.type !== "message") continue;
     const message = entry.message;
     if (message?.role !== "user" && message?.role !== "assistant") continue;
     messageCount += 1;
+    if (message.role !== "user") continue;
     const text = contentText(message.content, TEXT_TYPES);
-    if (!firstMessage && message.role === "user" && text && !isBootstrapMessage(text)) firstMessage = cleanTitle(text);
+    if (isSyntheticUserText(text)) continue;
+    hasUserMessage = true;
+    firstMessage ||= deriveTitle(text);
   }
+  if (!hasUserMessage) return null;
+  // Pi titles a session by its latest session_info on any branch; an empty name clears it.
+  const name = cleanTitle(entries.findLast((entry) => entry.type === "session_info")?.name);
 
   const stats = fileStats(filePath);
   return {
@@ -173,13 +180,16 @@ function parsePiMessages(filePath) {
   return coalesce(messages);
 }
 
+// Pi keeps abandoned branches in the file; the active one runs from the last entry back to the root.
 function activePiBranch(entries) {
-  const branchEntries = entries.filter((entry) => entry?.type !== "session" && entry?.id);
-  if (branchEntries.length === 0) return [];
-  const byId = new Map(branchEntries.map((entry) => [entry.id, entry]));
+  const branchEntries = entries.filter((entry) => entry && entry.type !== "session");
+  const leaf = branchEntries.at(-1);
+  // Version 1 sessions predate the tree and are linear.
+  if (leaf?.id === undefined) return branchEntries;
+  const byId = new Map(branchEntries.filter((entry) => entry.id !== undefined).map((entry) => [entry.id, entry]));
   const branch = [];
   const seen = new Set();
-  let current = branchEntries.at(-1);
+  let current = leaf;
   while (current && !seen.has(current.id)) {
     branch.push(current);
     seen.add(current.id);

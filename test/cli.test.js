@@ -19,7 +19,7 @@ test("prints each share URL on its own unbroken output line", () => {
 
   assert.equal(output.split("\n").filter((line) => line.includes(accessUrl)).length, 1);
   assert.equal(output.split("\n").filter((line) => line.includes(versionUrl)).length, 1);
-  assert.match(output, /Access\n/);
+  assert.match(output, /Link\n/);
 });
 
 test("explicit session lookup checks every matching ID despite the picker limit", async () => {
@@ -33,10 +33,26 @@ test("explicit session lookup checks every matching ID despite the picker limit"
   }), /ambiguous \(2 matches\)/);
 });
 
+test("one searchable picker lists every agent's sessions newest first", async () => {
+  const codex = fakeAdapter("codex");
+  codex.discover = () => [{ agent: "codex", agentLabel: "Codex", id: "codex-old", title: "Fix the router", project: "/work/api", updatedAt: 1_000 }];
+  const claude = fakeAdapter("claude");
+  claude.discover = () => [{ agent: "claude", agentLabel: "Claude Code", id: "claude-new", title: "Draft the launch post", updatedAt: 2_000 }];
+  const prompts = fakePrompts([0]);
+
+  const result = await run(["--dry-run"], { adapters: [codex, claude], prompts, interactive: true, log: () => {} });
+
+  const [picker] = prompts.asked;
+  assert.deepEqual(picker.options.map((option) => option.label), ["Draft the launch post", "Fix the router"]);
+  assert.match(picker.options[1].hint, /^Codex · .* · \/work\/api · codex-old$/);
+  assert.deepEqual(picker.options.filter((option) => picker.filter("codex api", option)).map((option) => option.label), ["Fix the router"]);
+  assert.equal(result.sessionId, "claude-new");
+});
+
 test("reuses the first global session space on later runs", async (context) => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "push-session-global-"));
   context.after(() => fs.rmSync(root, { recursive: true, force: true }));
-  const env = { PUSH_SESSION_CONFIG: path.join(root, "config.json") };
+  const env = { PUSH_SESSION_CONFIG: path.join(root, "config.json"), SPACEFAST_HOME: root };
   const projectStateBefore = fs.existsSync(path.join(process.cwd(), ".spacefast"));
   const publishPayloads = [];
   const fetchImpl = async (url, init) => {
@@ -67,7 +83,7 @@ test("reuses the first global session space on later runs", async (context) => {
 test("replaces rejected implicit global state without blocking the publish", async (context) => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "push-session-fallback-"));
   context.after(() => fs.rmSync(root, { recursive: true, force: true }));
-  const env = { PUSH_SESSION_CONFIG: path.join(root, "config.json") };
+  const env = { PUSH_SESSION_CONFIG: path.join(root, "config.json"), SPACEFAST_HOME: root };
   saveConfig({ version: 1, space: { id: "spc_stale", claimToken: "stale-key" } }, env);
   const warnings = [];
   const publishPayloads = [];
@@ -104,10 +120,10 @@ test("replaces rejected implicit global state without blocking the publish", asy
   assert.match(warnings[0], /no longer reusable/);
 });
 
-test("one-off space and alternate API publishes preserve the saved global space", async (context) => {
+test("alternate API publishes and unreadable config keep the saved anonymous space", async (context) => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "push-session-one-off-"));
   context.after(() => fs.rmSync(root, { recursive: true, force: true }));
-  const env = { PUSH_SESSION_CONFIG: path.join(root, "config.json"), SPACEFAST_TOKEN: "owned-token" };
+  const env = { PUSH_SESSION_CONFIG: path.join(root, "config.json"), SPACEFAST_HOME: root };
   saveConfig({ version: 1, space: { id: "spc_global", claimToken: "global-key" } }, env);
   const requests = [];
   const fetchImpl = async (url, init) => {
@@ -115,19 +131,17 @@ test("one-off space and alternate API publishes preserve the saved global space"
     requests.push({ url: String(url), payload: JSON.parse(init.body.get("payload")) });
     return jsonResponse(201, {
       data: {
-        space: { id: requests.length === 1 ? "spc_other" : "spc_alt", liveUrl: "https://sessions.example/" },
+        space: { id: "spc_alt", liveUrl: "https://sessions.example/" },
         claim: { key: "new-key" },
         next: { action: "done" },
       },
     });
   };
   const dependencies = { adapters: [fakeAdapter()], env, fetchImpl, log: () => {} };
-  await run(["codex", "session-one", "--json", "--space", "spc_other"], dependencies);
   await run(["codex", "session-one", "--json", "--api-url", "https://alternate.example/"], dependencies);
 
-  assert.equal(requests[0].payload.spaceId, "spc_other");
-  assert.equal(requests[1].url, "https://alternate.example/v1/publish?wait=1");
-  assert.equal(requests[1].payload.spaceId, undefined);
+  assert.equal(requests[0].url, "https://alternate.example/v1/publish?wait=1");
+  assert.equal(requests[0].payload.spaceId, undefined);
   assert.deepEqual(loadConfig(env).space, { id: "spc_global", claimToken: "global-key" });
 
   const unreadable = '{"space":{"id":"spc_global","accessToken":"saved-key"},"apiUrl":"file:///invalid"}';
@@ -138,10 +152,128 @@ test("one-off space and alternate API publishes preserve the saved global space"
   assert.match(warnings[0], /config\.json/);
 });
 
+test("signed in, the first pick becomes the default Space and --pick-space replaces it", async (context) => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "push-session-owned-"));
+  context.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const env = { PUSH_SESSION_CONFIG: path.join(root, "config.json"), SPACEFAST_HOME: root };
+  fs.writeFileSync(path.join(root, "auth.json"), JSON.stringify({
+    accessToken: "sf-login-token",
+    apiUrl: "https://api.spacefast.com",
+    expiresAt: new Date(Date.now() + 86_400_000).toISOString(),
+  }));
+  const api = fakeOwnedApi([
+    { id: "spc_notes", title: "Team notes", slug: "team-notes", liveUrl: "https://team-notes.space.fast/" },
+    { id: "spc_demo", title: "Demo", slug: "demo", liveUrl: "https://demo.space.fast/" },
+  ]);
+  const prompts = fakePrompts(["spc_notes", "spc_demo"]);
+  const output = [];
+  const dependencies = { adapters: [fakeAdapter()], env, fetchImpl: api.fetch, prompts, interactive: true, log: () => {}, write: (text) => output.push(text) };
+
+  const first = await run(["codex", "session-one"], dependencies);
+  const second = await run(["codex", "session-one"], dependencies);
+  const repicked = await run(["codex", "session-one", "--pick-space"], dependencies);
+
+  assert.equal(prompts.asked.length, 2);
+  assert.match(prompts.asked[0].options[0].label, /New Space · AI sessions/);
+  assert.deepEqual([first, second, repicked].map((result) => result.spaceId), ["spc_notes", "spc_notes", "spc_demo"]);
+  assert.ok(api.publishes.every((publish) => publish.authorization === "Bearer sf-login-token"));
+  assert.equal(second.spaceTitle, "Team notes");
+  assert.match(output[1], /Space\n.*Team notes/);
+  assert.doesNotMatch(output[1], /Claim/);
+  assert.deepEqual(loadConfig(env).owned["https://api.spacefast.com"], {
+    id: "spc_demo",
+    title: "Demo",
+    liveUrl: "https://demo.space.fast/",
+  });
+  assert.equal(JSON.stringify(loadConfig(env)).includes("sf-login-token"), false);
+});
+
+test("--space publishes once without moving the saved default Space", async (context) => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "push-session-space-once-"));
+  context.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const env = { PUSH_SESSION_CONFIG: path.join(root, "config.json"), SPACEFAST_HOME: root, SPACEFAST_TOKEN: "owned-token" };
+  saveConfig({ version: 1, owned: { "https://api.spacefast.com": { id: "spc_default", title: "AI sessions" } } }, env);
+  const api = fakeOwnedApi([]);
+  const dependencies = { adapters: [fakeAdapter()], env, fetchImpl: api.fetch, log: () => {} };
+
+  await run(["codex", "session-one", "--json", "--space", "spc_other"], dependencies);
+  await run(["codex", "session-one", "--json"], dependencies);
+
+  assert.deepEqual(api.publishes.map((publish) => publish.payload.spaceId), ["spc_other", "spc_default"]);
+  assert.equal(loadConfig(env).owned["https://api.spacefast.com"].id, "spc_default");
+});
+
+test("without a terminal, signed-in publishing reuses the AI sessions Space or creates a private one", async (context) => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "push-session-headless-"));
+  context.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const reuseEnv = { PUSH_SESSION_CONFIG: path.join(root, "reuse.json"), SPACEFAST_HOME: root, SPACEFAST_TOKEN: "owned-token" };
+  const createEnv = { ...reuseEnv, PUSH_SESSION_CONFIG: path.join(root, "create.json") };
+  const reuseApi = fakeOwnedApi([
+    { id: "spc_close", title: "AI sessions archive" },
+    { id: "spc_ai", title: "AI sessions", liveUrl: "https://ai-sessions.space.fast/" },
+  ]);
+  const createApi = fakeOwnedApi([{ id: "spc_close", title: "AI sessions archive" }]);
+
+  await run(["codex", "session-one", "--json"], { adapters: [fakeAdapter()], env: reuseEnv, fetchImpl: reuseApi.fetch, log: () => {} });
+  const created = await run(["codex", "session-one", "--json"], { adapters: [fakeAdapter()], env: createEnv, fetchImpl: createApi.fetch, log: () => {} });
+
+  assert.match(reuseApi.listUrls[0], /query=AI\+sessions/);
+  assert.equal(reuseApi.publishes[0].payload.spaceId, "spc_ai");
+  assert.equal(loadConfig(reuseEnv).owned["https://api.spacefast.com"].id, "spc_ai");
+  assert.deepEqual(createApi.publishes[0].payload.space, { title: "AI sessions" });
+  assert.equal(createApi.publishes[0].payload.access, "private");
+  assert.equal(created.spaceTitle, "AI sessions");
+  assert.equal(loadConfig(createEnv).owned["https://api.spacefast.com"].id, created.spaceId);
+});
+
+test("a new Space asks which team owns it when the credential spans teams", async (context) => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "push-session-team-"));
+  context.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const env = { PUSH_SESSION_CONFIG: path.join(root, "config.json"), SPACEFAST_HOME: root, SPACEFAST_TOKEN: "owned-token" };
+  const api = fakeOwnedApi([]);
+  const teams = [{ id: "team_a", slug: "acme", name: "Acme" }, { id: "team_b", slug: "side", name: "Side project" }];
+  const fetchImpl = async (url, init) => {
+    if (new URL(url).pathname === "/v1/publish" && !JSON.parse(init.body.get("payload")).teamId) {
+      return jsonResponse(400, { code: "team_required", detail: "Select a team for the new space.", details: { teams } });
+    }
+    return api.fetch(url, init);
+  };
+  const prompts = fakePrompts([null, "team_b"]);
+  prompts.select = async (options) => {
+    prompts.asked.push(options);
+    return prompts.asked.length === 1 ? options.options[0].value : "team_b";
+  };
+
+  await run(["codex", "session-one"], { adapters: [fakeAdapter()], env, fetchImpl, prompts, interactive: true, log: () => {}, write: () => {} });
+  await assert.rejects(
+    run(["codex", "session-one", "--json", "--new-space"], { adapters: [fakeAdapter()], env, fetchImpl, log: () => {} }),
+    /--team <slug> \(acme, side\)/,
+  );
+
+  assert.equal(prompts.asked[1].message, "Which team owns the new Space?");
+  assert.equal(api.publishes[0].payload.teamId, "team_b");
+  assert.equal(loadConfig(env).owned["https://api.spacefast.com"].title, "AI sessions");
+});
+
+test("a saved Space that is gone stops a headless publish and names the way out", async (context) => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "push-session-gone-"));
+  context.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const env = { PUSH_SESSION_CONFIG: path.join(root, "config.json"), SPACEFAST_HOME: root, SPACEFAST_TOKEN: "owned-token" };
+  saveConfig({ version: 1, owned: { "https://api.spacefast.com": { id: "spc_deleted", title: "Old sessions" } } }, env);
+  const api = fakeOwnedApi([], { missing: new Set(["spc_deleted"]) });
+
+  await assert.rejects(
+    run(["codex", "session-one", "--json"], { adapters: [fakeAdapter()], env, fetchImpl: api.fetch, log: () => {} }),
+    /"Old sessions" is gone or no longer yours.*--pick-space.*--space/,
+  );
+  assert.equal(api.publishes.length, 1);
+  assert.equal(loadConfig(env).owned["https://api.spacefast.com"].id, "spc_deleted");
+});
+
 test("uploads recovered artifacts with their Claude session", async (context) => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "push-session-claude-artifacts-"));
   context.after(() => fs.rmSync(root, { recursive: true, force: true }));
-  const env = { PUSH_SESSION_CONFIG: path.join(root, "config.json") };
+  const env = { PUSH_SESSION_CONFIG: path.join(root, "config.json"), SPACEFAST_HOME: root };
   const uploadedPaths = [];
   const fetchImpl = async (url, init) => {
     if (String(url).endsWith("/share-links")) {
@@ -206,7 +338,7 @@ test("uploads recovered artifacts with their Claude session", async (context) =>
 test("uploads recovered ChatGPT Sites with their Codex session", async (context) => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "push-session-chatgpt-sites-"));
   context.after(() => fs.rmSync(root, { recursive: true, force: true }));
-  const env = { PUSH_SESSION_CONFIG: path.join(root, "config.json") };
+  const env = { PUSH_SESSION_CONFIG: path.join(root, "config.json"), SPACEFAST_HOME: root };
   const uploadedPaths = [];
   const fetchImpl = async (url, init) => {
     if (String(url).endsWith("/share-links")) return jsonResponse(201, { data: { url: "https://sessions.example/__/with-site" } });
@@ -271,6 +403,58 @@ function fakeAdapter(id = "codex", messages = [{ role: "assistant", content: "Do
     installed: () => true,
     discover: () => [session],
     load: () => messages,
+  };
+}
+
+function fakeOwnedApi(spaces, { missing = new Set() } = {}) {
+  const publishes = [];
+  const listUrls = [];
+  let created = 0;
+  return {
+    publishes,
+    listUrls,
+    async fetch(url, init = {}) {
+      const target = new URL(url);
+      if (target.pathname === "/v1/spaces") {
+        listUrls.push(target.href);
+        const query = target.searchParams.get("query")?.toLowerCase();
+        return jsonResponse(200, {
+          data: spaces.filter((space) => !query || space.title.toLowerCase().includes(query)),
+          pagination: { nextCursor: null, hasMore: false },
+        });
+      }
+      if (target.pathname.endsWith("/share-links")) {
+        return jsonResponse(201, { data: { url: `https://sessions.example/${target.pathname.split("/")[3]}/link` } });
+      }
+      const payload = JSON.parse(init.body.get("payload"));
+      publishes.push({ payload, authorization: init.headers.authorization });
+      if (missing.has(payload.spaceId)) return jsonResponse(404, { code: "not_found", detail: "Space not found." });
+      const space = payload.spaceId
+        ? spaces.find((item) => item.id === payload.spaceId) || { id: payload.spaceId, title: payload.spaceId }
+        : { id: `spc_created_${(created += 1)}`, title: payload.space.title };
+      return jsonResponse(201, { data: { space: { liveUrl: "https://sessions.example/", ...space }, next: { action: "done" } } });
+    },
+  };
+}
+
+function fakePrompts(answers) {
+  const asked = [];
+  const quiet = () => {};
+  const answer = async (options) => {
+    asked.push(options);
+    return answers.shift();
+  };
+  return {
+    asked,
+    intro: quiet,
+    outro: quiet,
+    note: quiet,
+    cancel: quiet,
+    isCancel: () => false,
+    log: { warn: quiet, info: quiet },
+    spinner: () => ({ start: quiet, stop: quiet, error: quiet, message: quiet }),
+    select: answer,
+    autocomplete: answer,
   };
 }
 

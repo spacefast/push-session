@@ -138,9 +138,27 @@ export function isBootstrapMessage(value) {
   );
 }
 
-export function isTitleMessage(value) {
+// Codex records setup context as user text ahead of the real request (from T3 Code's AgentSessionScanner).
+export const CODEX_TITLE_PREAMBLE =
+  /^(?:\s*(?:<(recommended_plugins|environment_context|user_instructions|INSTRUCTIONS|in-app-browser-context)(?:\s[^>]*)?>[\s\S]*?<\/\1>|# AGENTS\.md instructions\b[^\n]*|## My request for Codex:))+/;
+
+// Harness-written user turns: slash-command echoes, task notifications, injected context.
+const SYNTHETIC_USER_TEXT =
+  /^<(system-reminder|task-notification|local-command-[\w-]+|command-(?:name|message|args)|environment_context|user_instructions|INSTRUCTIONS|recommended_plugins|in-app-browser-context)[\s>]/;
+
+export function isSyntheticUserText(value) {
   const text = String(value || "").trim();
-  return Boolean(text) && !isBootstrapMessage(text) && !text.startsWith("/") && !text.startsWith("?");
+  return !text || isBootstrapMessage(text) || SYNTHETIC_USER_TEXT.test(text);
+}
+
+export function deriveTitle(value) {
+  const text = String(value || "").trim();
+  if (isSyntheticUserText(text) || text.startsWith("/") || text.startsWith("?")) return null;
+  return cleanTitle(text.split("\n").find((line) => line.trim()));
+}
+
+export function isTitleMessage(value) {
+  return deriveTitle(value) !== null;
 }
 
 export function byRecent(a, b) {

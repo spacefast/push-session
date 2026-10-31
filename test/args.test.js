@@ -20,6 +20,7 @@ test("supports the interactive agent-only flow", () => {
 
 test("rejects conflicting space selection", () => {
   assert.throws(() => parseArgs(["--space", "spc_one", "--new-space"]), /cannot be used together/);
+  assert.throws(() => parseArgs(["--pick-space", "--space", "spc_one"]), /--space and --pick-space cannot be used together/);
   assert.throws(() => parseArgs(["codex", "one", "--limit=2x"]), /integer between 1 and 500/);
   assert.throws(() => parseArgs(["codex", "one", "--space="]), /requires a value/);
   assert.throws(() => parseArgs(["codex", "one", "--api-url", "https://api.example/other"]), /HTTPS origin or an HTTP loopback origin/);

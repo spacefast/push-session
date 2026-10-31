@@ -4,6 +4,7 @@ import os from "node:os";
 import path from "node:path";
 
 import { apiOrigin } from "./args.js";
+import { DEFAULT_API_URL } from "./auth.js";
 
 export function configPath(env = process.env) {
   if (env.PUSH_SESSION_CONFIG) return path.resolve(env.PUSH_SESSION_CONFIG);
@@ -53,16 +54,20 @@ export function saveConfig(config, env = process.env) {
   return normalized;
 }
 
+/**
+ * Decides where an anonymous publish lands. Owned publishing (signed in) goes
+ * through `ownedSpaceFor` / `rememberOwnedSpace` instead.
+ */
 export function selectPublishState(config, options, env = process.env) {
-  const apiUrl = options.apiUrl || config.apiUrl || "https://api.spacefast.com";
-  const sameApi = apiUrl === (config.apiUrl || "https://api.spacefast.com");
+  const apiUrl = options.apiUrl || config.apiUrl || DEFAULT_API_URL;
+  const sameApi = apiUrl === (config.apiUrl || DEFAULT_API_URL);
   const savedSpace = sameApi ? config.space : null;
   const spaceId = options.newSpace ? null : options.space || savedSpace?.id || null;
   const savedAccessToken = spaceId === savedSpace?.id ? savedSpace?.accessToken : null;
   const claimToken = spaceId === savedSpace?.id ? savedSpace?.claimToken : null;
   const accessToken = env.SPACEFAST_TOKEN || savedAccessToken || null;
   if (options.space && !accessToken && !claimToken) {
-    throw new Error("Publishing to --space requires SPACEFAST_TOKEN unless it is the saved anonymous space.");
+    throw new Error("--space needs you signed in. Run `sf login` or set SPACEFAST_TOKEN.");
   }
   return {
     apiUrl,
@@ -75,13 +80,34 @@ export function selectPublishState(config, options, env = process.env) {
   };
 }
 
+export function resolveApiUrl(config, options) {
+  return options.apiUrl || config.apiUrl || DEFAULT_API_URL;
+}
+
+/** The signed-in default Space for an API origin, if one was picked. */
+export function ownedSpaceFor(config, apiUrl) {
+  return config.owned?.[apiUrl] || null;
+}
+
+export function rememberOwnedSpace(config, apiUrl, space, env = process.env) {
+  const next = {
+    ...config,
+    owned: {
+      ...(config.owned || {}),
+      [apiUrl]: { id: space.id, title: space.title || undefined, liveUrl: space.liveUrl || undefined },
+    },
+  };
+  return saveConfig(next, env);
+}
+
 export function rememberPublishResult(config, state, result, env = process.env) {
   if (!state.remember) return;
   const continuingSavedAccess = result.space.id === config.space?.id ? state.savedAccessToken : null;
   const persistedAccessToken = result.credential?.accessToken || continuingSavedAccess || undefined;
   saveConfig({
+    ...config,
     version: 1,
-    apiUrl: state.apiUrl === "https://api.spacefast.com" ? undefined : state.apiUrl,
+    apiUrl: state.apiUrl === DEFAULT_API_URL ? undefined : state.apiUrl,
     space: {
       id: result.space.id,
       liveUrl: result.space.liveUrl,
@@ -105,6 +131,20 @@ function normalizeConfig(input) {
       ...(stringField(input.space.claimUrl) && { claimUrl: input.space.claimUrl }),
       ...(stringField(input.space.expiresAt) && { expiresAt: input.space.expiresAt }),
     };
+  }
+  if (input?.owned && typeof input.owned === "object") {
+    const owned = {};
+    for (const [origin, space] of Object.entries(input.owned)) {
+      if (!space || !stringField(space.id)) continue;
+      let key;
+      try { key = apiOrigin(origin); } catch { continue; }
+      owned[key] = {
+        id: space.id,
+        ...(stringField(space.title) && { title: space.title }),
+        ...(stringField(space.liveUrl) && { liveUrl: space.liveUrl }),
+      };
+    }
+    if (Object.keys(owned).length > 0) config.owned = owned;
   }
   return config;
 }

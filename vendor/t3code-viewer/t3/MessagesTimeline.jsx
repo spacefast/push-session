@@ -1,34 +1,56 @@
-// Static-viewer extraction of T3 Code's MessagesTimeline row components.
-// Component names, row structure, tool vocabulary, status treatment, and
-// interaction behavior come directly from MessagesTimeline.tsx.
-import { memo, useMemo, useState } from "react";
+// Static-viewer extraction of T3 Code's timeline rows, from
+// apps/web/src/components/chat/{MessagesTimeline,TimelineUserMessageRow,
+// TimelineAssistantRows,TimelineWorkGroupRows,TimelineWorkEntryRow,
+// TimelineWorkEntryRow.logic,TimelineToolActivityIcon,TimelineRowParts,WorkLog}.tsx.
+// Row structure, burst grouping, tool-group summaries, icon vocabulary and the
+// expand/copy interactions follow those files; live state, virtualization,
+// approvals, rewind and diff panels are outside this read-only boundary.
+import { memo, useState } from "react";
 import {
   BotIcon,
+  BrainIcon,
   CheckIcon,
-  ChevronDownIcon,
+  ChevronRightIcon,
   CircleAlertIcon,
   CopyIcon,
   EyeIcon,
   GlobeIcon,
   HammerIcon,
-  MinusIcon,
+  ListTodoIcon,
+  SearchIcon,
   SquarePenIcon,
   TerminalIcon,
   WrenchIcon,
-  XIcon,
   ZapIcon,
 } from "lucide-react";
 
 import ChatMarkdown from "./ChatMarkdown.jsx";
+import { describeToolCall, entryAction, entryFailed, summarizeToolGroup, toolGroupSummaryKind } from "./workLogPresentation.js";
 import "./components.css";
 
-function MessageCopyButton({ text }) {
+const ACTION_ICONS = {
+  command: TerminalIcon,
+  edit: SquarePenIcon,
+  read: EyeIcon,
+  "code-search": SearchIcon,
+  search: GlobeIcon,
+  agent: BotIcon,
+  todo: ListTodoIcon,
+  reasoning: BrainIcon,
+  skill: ZapIcon,
+  mcp: WrenchIcon,
+  other: HammerIcon,
+  mixed: HammerIcon,
+};
+
+function MessageCopyButton({ text, label = "Copy message" }) {
   const [copied, setCopied] = useState(false);
   return (
     <button
       className="copy-button small"
       type="button"
-      aria-label="Copy message"
+      aria-label={copied ? "Copied" : label}
+      title={copied ? "Copied" : label}
       onClick={() => navigator.clipboard.writeText(text).then(() => {
         setCopied(true);
         window.setTimeout(() => setCopied(false), 1_000);
@@ -39,114 +61,136 @@ function MessageCopyButton({ text }) {
   );
 }
 
-export function UserTimelineRow({ message }) {
+function RowTimestamp({ createdAt }) {
+  if (!createdAt) return null;
+  return <time dateTime={createdAt} title={longTimestamp(createdAt)}>{dayAwareTimestamp(createdAt)}</time>;
+}
+
+export function UserTimelineRow({ message, groupedWithNext = false }) {
   const [expanded, setExpanded] = useState(false);
   const text = message.detail || "";
   const collapsible = text.length > 1_200;
   return (
-    <section className="user-row timeline-row group flex flex-col items-end gap-1">
-      <div className={`user-bubble relative max-w-[80%] rounded-2xl border border-border bg-secondary p-3 ${collapsible && !expanded ? "collapsed" : ""}`}>
+    <section className={`user-row timeline-row ${groupedWithNext ? "grouped" : ""}`}>
+      <div className={`user-bubble ${collapsible && !expanded ? "collapsed" : ""}`}>
         <ChatMarkdown text={text} lineBreaks />
-        {collapsible ? (
-          <button className="text-button" type="button" onClick={() => setExpanded((value) => !value)}>
-            {expanded ? "Show less" : "Show full message"}
-          </button>
-        ) : null}
       </div>
-      <div className="message-actions flex items-center justify-end">
-        {message.createdAt ? <time>{shortTimestamp(message.createdAt)}</time> : null}
-        <MessageCopyButton text={text} />
-      </div>
-    </section>
-  );
-}
-
-export function AssistantTimelineRow({ message }) {
-  const text = message.detail || "";
-  return (
-    <section className="assistant-row timeline-row group/assistant pb-4">
-      <div className="assistant-markdown relative min-w-0 px-1 py-0.5">
-        <ChatMarkdown text={text || "(empty response)"} />
-      </div>
-      <div className="message-actions assistant-actions">
-        <MessageCopyButton text={text} />
-        {message.data?.model ? <span>{message.data.model}</span> : null}
-        {message.createdAt ? <time>{shortTimestamp(message.createdAt)}</time> : null}
-      </div>
-    </section>
-  );
-}
-
-export const WorkGroupSection = memo(function WorkGroupSection({ entries }) {
-  const [showAll, setShowAll] = useState(false);
-  const nonEmptyEntries = useMemo(() => entries.filter((entry) => entry.detail || entry.title), [entries]);
-  const hidden = Math.max(0, nonEmptyEntries.length - 4);
-  const visible = showAll || hidden === 0 ? nonEmptyEntries : nonEmptyEntries.slice(-4);
-  if (nonEmptyEntries.length === 0) return null;
-  return (
-    <section className="work-group timeline-row -mx-1 space-y-0.5 px-1 py-0.5" aria-label={`${nonEmptyEntries.length} tool calls`}>
-      {hidden > 0 ? (
-        <button className="work-overflow" type="button" aria-expanded={showAll} onClick={() => setShowAll((value) => !value)}>
-          <ChevronDownIcon className={showAll ? "rotate" : ""} />
-          {showAll ? "Show fewer tool calls" : `+${hidden} previous tool call${hidden === 1 ? "" : "s"}`}
+      {collapsible ? (
+        <button className="text-button" type="button" aria-expanded={expanded} onClick={() => setExpanded((value) => !value)}>
+          {expanded ? "Show less" : "Show full message"}
         </button>
       ) : null}
-      <div className="work-list space-y-px">
-        {visible.map((workEntry, index) => (
-          <SimpleWorkEntryRow key={workEntry.itemId || index} workEntry={workEntry} />
-        ))}
+      {groupedWithNext ? null : (
+        <div className="message-actions">
+          <RowTimestamp createdAt={message.createdAt} />
+          <MessageCopyButton text={text} />
+        </div>
+      )}
+    </section>
+  );
+}
+
+export function AssistantTimelineRow({ message, showMeta = true }) {
+  const text = message.detail || "";
+  return (
+    <section className={`assistant-row timeline-row ${showMeta ? "" : "continues"}`}>
+      <div className="assistant-markdown">
+        <ChatMarkdown text={text || "(empty response)"} />
       </div>
+      {showMeta ? (
+        <div className="message-actions assistant-actions">
+          <MessageCopyButton text={text} label="Copy response" />
+          {message.data?.model ? <span className="assistant-model">{message.data.model}</span> : null}
+          <RowTimestamp createdAt={message.createdAt} />
+        </div>
+      ) : null}
+    </section>
+  );
+}
+
+/** One work burst: a lone call renders as its row; several fold under a summary header. */
+export const WorkGroupSection = memo(function WorkGroupSection({ entries }) {
+  const [expanded, setExpanded] = useState(false);
+  const visible = entries.filter((entry) => entry.detail || entry.title || entry.data?.label);
+  if (visible.length === 0) return null;
+  if (visible.length === 1) {
+    return (
+      <section className="work-group timeline-row" aria-label="Activity">
+        <WorkEntryRow workEntry={visible[0]} />
+      </section>
+    );
+  }
+  const kind = toolGroupSummaryKind(visible);
+  const Icon = ACTION_ICONS[kind] || HammerIcon;
+  const summary = summarizeToolGroup(visible);
+  const latestTool = visible.findLast((entry) => entry.itemType !== "reasoning");
+  const failed = latestTool ? entryFailed(latestTool) : false;
+  return (
+    <section className="work-group timeline-row" aria-label="Activity">
+      <button
+        className="work-line work-toggle"
+        type="button"
+        aria-expanded={expanded}
+        aria-label={failed ? `${summary}, tool call failed` : summary}
+        onClick={() => setExpanded((value) => !value)}
+      >
+        <span className={`work-icon ${failed ? "failed" : ""}`}><Icon /></span>
+        <span className="work-label">{summary}</span>
+        <ChevronRightIcon className={`work-chevron ${expanded ? "open" : ""}`} />
+        <span className="work-trailing"><RowTimestamp createdAt={visible[0].createdAt} /></span>
+      </button>
+      {expanded ? (
+        <div className="work-list">
+          {visible.map((workEntry, index) => <WorkEntryRow key={workEntry.itemId || index} workEntry={workEntry} />)}
+        </div>
+      ) : null}
     </section>
   );
 });
 
-const SimpleWorkEntryRow = memo(function SimpleWorkEntryRow({ workEntry }) {
+const WorkEntryRow = memo(function WorkEntryRow({ workEntry }) {
   const [expanded, setExpanded] = useState(false);
-  const heading = toolWorkEntryHeading(workEntry);
-  const rawPreview = workEntry.data?.summary || workEntry.data?.command || "";
-  const preview = rawPreview && normalizeCompactToolLabel(rawPreview).toLowerCase() !== normalizeCompactToolLabel(heading).toLowerCase() ? rawPreview : null;
-  const expandedBody = workEntry.detail || null;
-  const canExpand = expandedBody !== null;
-  const failed = workEntry.status === "failed" || workEntry.status === "declined" || workEntry.data?.isError;
-  const neutral = workEntry.status === "inProgress";
-  const EntryIcon = workEntryIcon(workEntry);
+  const isReasoning = workEntry.itemType === "reasoning";
+  const action = entryAction(workEntry);
+  const label = isReasoning
+    ? expanded ? "Thought" : (workEntry.detail || "Thought").replace(/\s+/g, " ").trim()
+    : workEntry.data?.label || describeToolCall({ itemType: workEntry.itemType, name: workEntry.data?.name || workEntry.title, summary: workEntry.data?.summary }).label;
+  const body = expandedBody(workEntry, label);
+  const canExpand = Boolean(body);
+  const failed = entryFailed(workEntry);
+  const Icon = failed && action === "other" ? CircleAlertIcon : ACTION_ICONS[action] || HammerIcon;
+  const toggle = () => setExpanded((value) => !value);
   return (
-    <div
-      className={`work-entry flex flex-col rounded-md px-0.5 py-0.5 transition-colors ${canExpand ? "expandable" : ""}`}
-      role={canExpand ? "button" : undefined}
-      tabIndex={canExpand ? 0 : undefined}
-      aria-label={preview ? `${heading} - ${preview}` : heading}
-      onClick={canExpand ? () => setExpanded((value) => !value) : undefined}
-      onKeyDown={canExpand ? (event) => {
-        if (event.key === "Enter" || event.key === " ") {
-          event.preventDefault();
-          setExpanded((value) => !value);
-        }
-      } : undefined}
-    >
-      <div className="work-line flex select-none items-center gap-1.5">
-        <span className="work-icon flex size-5 shrink-0 items-center justify-center text-muted-foreground/65"><EntryIcon /></span>
-        <span className="work-heading font-medium text-foreground/82">{heading}</span>
-        {preview ? <span className="work-preview text-muted-foreground/55">{preview}</span> : null}
-        {canExpand ? <ChevronDownIcon className={`work-chevron ${expanded ? "rotate" : ""}`} /> : null}
-        <span className={`work-status ${failed ? "failed" : neutral ? "neutral" : "success"}`} title={failed ? "Failed" : neutral ? "In progress" : "Completed"}>
-          {failed ? <XIcon /> : neutral ? <MinusIcon /> : <CheckIcon />}
+    <div className={`work-entry ${canExpand ? "expandable" : ""} ${failed ? "failed" : ""}`}>
+      <div
+        className="work-line"
+        role={canExpand ? "button" : undefined}
+        tabIndex={canExpand ? 0 : undefined}
+        aria-expanded={canExpand ? expanded : undefined}
+        aria-label={failed ? `${label}, tool call failed` : label}
+        onClick={canExpand ? toggle : undefined}
+        onKeyDown={canExpand ? (event) => {
+          if (event.target === event.currentTarget && (event.key === "Enter" || event.key === " ")) {
+            event.preventDefault();
+            toggle();
+          }
+        } : undefined}
+      >
+        <span className={`work-icon ${failed ? "failed" : ""}`} role={failed ? "img" : undefined} aria-label={failed ? "Tool call failed" : undefined}>
+          <Icon />
         </span>
+        <span className={`work-label ${action === "command" ? "mono" : ""}`}>{label}</span>
+        {canExpand ? <ChevronRightIcon className={`work-chevron ${expanded ? "open" : ""}`} /> : null}
       </div>
-      {expanded && expandedBody ? (
-        <div className="mt-1 ms-7 cursor-default border-s border-border/45 ps-3 pt-0.5" onClick={(event) => event.stopPropagation()}>
-          <pre className="work-detail">{expandedBody}</pre>
-        </div>
+      {expanded && body ? (
+        isReasoning ? (
+          <div className="work-detail reasoning"><ChatMarkdown text={body} /></div>
+        ) : (
+          <pre className="work-detail">{body}</pre>
+        )
       ) : null}
       {workEntry.data?.artifact ? (
-        <a
-          className="artifact-work-link"
-          href={workEntry.data.artifact.href}
-          target="_blank"
-          rel="noreferrer"
-          onClick={(event) => event.stopPropagation()}
-          onKeyDown={(event) => event.stopPropagation()}
-        >
+        <a className="artifact-work-link" href={workEntry.data.artifact.href} target="_blank" rel="noreferrer">
           <span>{workEntry.data.artifact.favicon || "◇"}</span>
           Open {workEntry.data.artifact.title || "artifact"}
           {workEntry.data.artifact.version ? ` · version ${workEntry.data.artifact.version}` : ""}
@@ -157,38 +201,28 @@ const SimpleWorkEntryRow = memo(function SimpleWorkEntryRow({ workEntry }) {
   );
 });
 
-function workEntryIcon(workEntry) {
-  if (workEntry.itemType === "command_execution") return TerminalIcon;
-  if (workEntry.itemType === "file_change") return SquarePenIcon;
-  if (workEntry.itemType === "web_search") return GlobeIcon;
-  if (workEntry.itemType === "image_view") return EyeIcon;
-  if (workEntry.itemType === "mcp_tool_call") return WrenchIcon;
-  if (workEntry.itemType === "dynamic_tool_call" || workEntry.itemType === "collab_agent_tool_call") return HammerIcon;
-  if (workEntry.itemType === "error") return CircleAlertIcon;
-  if (workEntry.itemType === "reasoning") return BotIcon;
-  return ZapIcon;
+// buildToolCallExpandedBody: drop blocks that only repeat the visible label.
+function expandedBody(workEntry, label) {
+  const detail = workEntry.detail?.trim();
+  if (!detail) return null;
+  if (workEntry.itemType === "reasoning") return detail;
+  const blocks = detail.split(/\n\n(?=(?:Input|Output)\n)/u).filter((block) => {
+    const content = block.replace(/^(?:Input|Output)\n/u, "").trim();
+    return content && content !== label.trim() && content !== JSON.stringify(label);
+  });
+  return blocks.length > 0 ? blocks.join("\n\n") : null;
 }
 
-function normalizeCompactToolLabel(value) {
-  return String(value || "").replaceAll("_", " ").replace(/\s+/g, " ").trim();
+function dayAwareTimestamp(value) {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "";
+  const sameDay = date.toDateString() === new Date().toDateString();
+  return new Intl.DateTimeFormat(undefined, sameDay
+    ? { hour: "numeric", minute: "2-digit" }
+    : { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" }).format(date);
 }
 
-function toolWorkEntryHeading(workEntry) {
-  const labels = {
-    exec_command: "Ran command",
-    shell: "Ran command",
-    bash: "Ran command",
-    artifact: "Published artifact",
-    apply_patch: "Edited files",
-    read_file: "Read file",
-    view_image: "Viewed image",
-    web_search: "Searched the web",
-  };
-  const name = workEntry.data?.name || workEntry.title || workEntry.itemType || "Tool call";
-  const label = labels[name] || normalizeCompactToolLabel(name);
-  return label ? `${label.charAt(0).toUpperCase()}${label.slice(1)}` : "Tool call";
-}
-
-function shortTimestamp(value) {
-  return new Intl.DateTimeFormat(undefined, { hour: "numeric", minute: "2-digit" }).format(new Date(value));
+function longTimestamp(value) {
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? "" : new Intl.DateTimeFormat(undefined, { dateStyle: "full", timeStyle: "medium" }).format(date);
 }

@@ -1,44 +1,55 @@
 # push-session
 
-Share AI coding-agent sessions as private [Spacefast](https://spacefast.com)
-links.
+Share an AI coding-agent session as a private [Spacefast](https://spacefast.com)
+link. One command, no setup.
 
 ```bash
-npx push-session
-npx push-session claude
-npx push-session codex <session-id>
-npx push-session artifacts list
-npx push-session artifacts export --all
-npx push-session artifacts publish <artifact-id>
+npx push-session                 # pick any session from any agent
+npx push-session claude          # pick from one agent
+npx push-session codex <id>      # share that one, no questions
 ```
 
-It discovers local Codex, Claude Code, Gemini CLI, Cursor Agent, and Pi sessions,
-then asks which one to publish. The first run creates an anonymous Spacefast
-space and remembers it in the user-global push-session config. Later runs reuse
-that space from any working directory without adding project-local state. If
-saved implicit state can no longer authorize the space, publishing continues in
-a replacement space; an explicit `--space <id>` remains strict. Claim the space
-to keep using it, or set `SPACEFAST_TOKEN` for owned publishing.
-Publishing once with `--space` keeps the saved default space. An `--api-url`
-override uses separate API state and keeps the saved default unless you also
-pass `--new-space` to make the new space your default.
+It finds your local Codex, Claude Code, Gemini CLI, Cursor Agent, and Pi
+sessions and puts them in one searchable list, newest first. Titles come from
+the agent itself: your rename first, then the agent's own title, then your first
+real prompt. Subagent and sidechain transcripts stay out of the list.
 
-Sessions render as paginated, read-only transcripts with Markdown and tool
-calls. Each share uses the session ID as its route and a scoped, unguessable
-view-only access link. Claude sessions also recover and upload their published
-HTML or Markdown artifacts automatically. The session page links each artifact,
-and transcript references point at the recovered copy inside the same private
-Spacefast share. Codex sessions do the same for ChatGPT Sites: `push-session`
-attaches a browsable snapshot of the exact recorded Git commit and, when it is
-still present locally, the original Sites deployment package. It keeps the real
-live Sites URL as the application link because a Sites Worker build is not a
-static HTML site.
+## Where your sessions go
 
-> Sessions may contain code, file paths, commands, or secrets. Review before
-> sharing. Anyone with the generated link can view it.
+**Signed in** (`sf login`, or `SPACEFAST_TOKEN`): the first run asks which of
+your Spaces should hold your sessions, or makes a new private one called
+"AI sessions". That choice is remembered. Every later run publishes straight
+there.
 
-Options: `--space <id>`, `--new-space`, `--limit <n>`, `--dry-run`, `--json`,
-and `--api-url <url>`.
+```bash
+npx push-session --pick-space    # choose a different Space and remember it
+npx push-session --space <id>    # publish to another Space once
+npx push-session --new-space     # fresh "AI sessions" Space, now the default
+```
+
+In more than one team? You'll be asked which team owns a new Space, or pass
+`--team <slug>`. With no terminal attached (agents, `--json`), push-session
+reuses your Space titled "AI sessions", or creates it.
+
+**Signed out:** sessions go to a claimable Space that lives on this machine.
+Claim it to keep the links, or run `sf login` to publish into your own Space.
+
+Each session gets its own route and a view-only share link scoped to it. Nobody
+can browse the rest of the Space with it.
+
+> Sessions can contain code, file paths, commands, and secrets. Review before
+> sharing. Anyone with the link can read it.
+
+Options: `--pick-space`, `--space <id>`, `--new-space`, `--team <slug>`,
+`--limit <n>`, `--dry-run`, `--json`, and `--api-url <url>`.
+
+## What the page shows
+
+A paginated, read-only transcript: your messages, the agent's replies in
+Markdown, and its tool calls folded into readable groups ("Ran 3 commands and
+changed 2 files"). Light and dark. Claude sessions also bring along the HTML and
+Markdown artifacts they published, and Codex sessions bring the ChatGPT Sites
+they built (details below).
 
 ## Recover Claude Code artifacts
 
@@ -87,9 +98,13 @@ Archives that belong to a different Site or contain files with sensitive
 names are left out. Review the transcript, source, and any remaining archive
 before sharing; embedded secrets in code cannot be detected reliably.
 
-The viewer directly vendors static components from MIT-licensed
-[T3 Code](https://github.com/pingdotgg/t3code); its license and attribution are
-included in [`vendor/t3code-viewer`](vendor/t3code-viewer).
+## Credits
+
+The transcript viewer is built from [T3 Code](https://github.com/pingdotgg/t3code)
+by T3 Tools Inc. We vendor its timeline rows, tool-call presentation, and
+Markdown rendering, and session discovery follows its agent-session importer.
+T3 Code is MIT-licensed; its license and the exact upstream revision and files
+are in [`vendor/t3code-viewer`](vendor/t3code-viewer). Thank you, T3 team.
 
 ## Development
 

@@ -2,6 +2,7 @@ import { createHash, randomBytes, randomUUID } from "node:crypto";
 import path from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 
+import { DEFAULT_API_URL } from "./auth.js";
 import { packageVersion } from "./version.js";
 
 const MAX_PUBLISH_ATTEMPTS = 10;
@@ -13,7 +14,7 @@ export async function publishSession(input) {
   const fetchImpl = input.fetchImpl || globalThis.fetch;
   if (typeof fetchImpl !== "function") throw new Error("push-session requires a Node.js runtime with fetch support.");
 
-  const apiUrl = (input.apiUrl || "https://api.spacefast.com").replace(/\/$/, "");
+  const apiUrl = (input.apiUrl || DEFAULT_API_URL).replace(/\/$/, "");
   const files = prepareFiles(input);
   const entryPath = input.entryPath ? normalizeFilePath(input.entryPath) : files[0]?.path;
   if (!entryPath) throw new Error("No session entry file was provided.");
@@ -36,6 +37,8 @@ export async function publishSession(input) {
     ...(requestedSpace && { spaceId: requestedSpace }),
     publishMode: "additive",
     ...(!requestedSpace && { space: { title: input.spaceTitle || "Shared AI sessions" } }),
+    ...(!requestedSpace && input.teamId && { teamId: input.teamId }),
+    ...(!requestedSpace && input.access && { access: input.access }),
   };
   const inline = totalFileBytes(files) <= (input.inlineLimitBytes ?? DEFAULT_INLINE_LIMIT);
   let initial;
@@ -106,6 +109,7 @@ export async function publishSession(input) {
     credential: exchangedAccessToken ? { accessToken: exchangedAccessToken } : null,
     space: {
       id: space.id,
+      title: space.title || null,
       liveUrl,
       claimToken: claim?.key || input.claimToken || null,
       claimUrl: claim?.claimUrl || null,
@@ -262,6 +266,17 @@ function totalFileBytes(files) {
   return files.reduce((total, file) => total + file.size, 0);
 }
 
+/** Lists the Spaces a credential can publish into, newest first. */
+export async function listSpaces({ apiUrl = DEFAULT_API_URL, accessToken, query, limit = 100, fetchImpl = globalThis.fetch }) {
+  const url = new URL("/v1/spaces", apiUrl);
+  url.searchParams.set("limit", String(limit));
+  if (query) url.searchParams.set("query", query);
+  const response = await fetchImpl(url, { headers: requestHeaders({ bearerToken: accessToken }) });
+  const body = await responseJson(response);
+  if (!response.ok) throw apiError(response, body);
+  return (Array.isArray(body?.data) ? body.data : []).filter((space) => space && !space.anonymous);
+}
+
 export function sessionRoute(session) {
   return `sessions/${safeSegment(session?.id)}/index.html`;
 }
@@ -304,11 +319,12 @@ async function responseJson(response) {
 }
 
 function apiError(response, body) {
-  const message = body?.message || body?.detail || body?.title || `Spacefast request failed (${response.status}).`;
+  const message = body?.detail || body?.message || body?.title || `Spacefast request failed (${response.status}).`;
   const suggestions = Array.isArray(body?.suggestions) ? ` ${body.suggestions.join(" ")}` : "";
   const error = new Error(`${message}${suggestions}`.trim());
   error.code = body?.code;
   error.status = response.status;
+  error.details = body?.details;
   return error;
 }
 
