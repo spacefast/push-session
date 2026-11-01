@@ -3,8 +3,10 @@ import { createCodexAdapter } from "./codex.js";
 import { createCursorAdapter } from "./cursor.js";
 import { createGeminiAdapter } from "./gemini.js";
 import { createPiAdapter } from "./pi.js";
+import { createT3Adapter } from "./t3.js";
 
 export const adapters = [
+  createT3Adapter(),
   createCodexAdapter(),
   createClaudeAdapter(),
   createGeminiAdapter(),

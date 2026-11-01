@@ -43,10 +43,28 @@ test("one searchable picker lists every agent's sessions newest first", async ()
   const result = await run(["--dry-run"], { adapters: [codex, claude], prompts, interactive: true, log: () => {} });
 
   const [picker] = prompts.asked;
-  assert.deepEqual(picker.options.map((option) => option.label), ["Draft the launch post", "Fix the router"]);
+  assert.deepEqual(picker.options.filter((option) => typeof option.value === "number").map((option) => option.label), ["Draft the launch post", "Fix the router"]);
   assert.match(picker.options[1].hint, /^Codex · .* · \/work\/api · codex-old$/);
-  assert.deepEqual(picker.options.filter((option) => picker.filter("codex api", option)).map((option) => option.label), ["Fix the router"]);
+  assert.deepEqual(picker.options.filter((option) => typeof option.value === "number" && picker.filter("codex api", option)).map((option) => option.label), ["Fix the router"]);
   assert.equal(result.sessionId, "claude-new");
+});
+
+test("picker pages across all sessions and searches beyond the page limit", async () => {
+  const adapter = fakeAdapter();
+  const first = adapter.discover()[0];
+  adapter.discover = ({ limit } = {}) => Array.from({ length: 5 }, (_, index) => ({
+    ...first, id: `session-${index}`, title: `Session ${index}`, updatedAt: 5 - index,
+  })).slice(0, limit);
+  const prompts = fakePrompts(["next", "previous", "search", "Session 4", "clear", "next", "next", 0]);
+  const result = await run(["codex", "--limit", "2", "--dry-run"], {
+    adapters: [adapter], prompts, interactive: true, log: () => {},
+  });
+  assert.equal(result.sessionId, "session-4");
+  const pickers = prompts.asked.filter((prompt) => prompt.options);
+  assert.deepEqual(pickers[1].options.filter((item) => typeof item.value === "number").map((item) => item.label), ["Session 2", "Session 3"]);
+  assert.deepEqual(pickers[2].options.filter((item) => typeof item.value === "number").map((item) => item.label), ["Session 0", "Session 1"]);
+  assert.equal(pickers[3].options[0].label, "Session 4");
+  assert.equal(pickers.at(-1).options.some((item) => item.value === "next"), false);
 });
 
 test("reuses the first global session space on later runs", async (context) => {
@@ -453,6 +471,7 @@ function fakePrompts(answers) {
     isCancel: () => false,
     log: { warn: quiet, info: quiet },
     spinner: () => ({ start: quiet, stop: quiet, error: quiet, message: quiet }),
+    text: answer,
     select: answer,
     autocomplete: answer,
   };

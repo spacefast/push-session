@@ -272,3 +272,43 @@ test("honors Pi's configured flat session directory", (context) => {
 function writeJsonl(filePath, entries) {
   fs.writeFileSync(filePath, `${entries.map((entry) => JSON.stringify(entry)).join("\n")}\n`);
 }
+
+test("discovers T3 threads and maps messages and completed tool activity", async (context) => {
+  const { execFileSync } = await import("node:child_process");
+  const { createT3Adapter } = await import("../src/agents/t3.js");
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), "push-session-t3-"));
+  context.after(() => fs.rmSync(home, { recursive: true, force: true }));
+  fs.mkdirSync(path.join(home, "userdata"));
+  const file = path.join(home, "userdata", "state.sqlite");
+  execFileSync("sqlite3", [file], { input: `
+    CREATE TABLE projection_projects (project_id TEXT, workspace_root TEXT);
+    CREATE TABLE projection_threads (thread_id TEXT, project_id TEXT, title TEXT, worktree_path TEXT, model_selection_json TEXT, created_at TEXT, updated_at TEXT, deleted_at TEXT);
+    CREATE TABLE projection_thread_messages (thread_id TEXT, role TEXT, text TEXT, created_at TEXT);
+    CREATE TABLE projection_thread_activities (thread_id TEXT, activity_id TEXT, kind TEXT, summary TEXT, payload_json TEXT, created_at TEXT);
+    INSERT INTO projection_projects VALUES ('project', '/work/demo');
+    INSERT INTO projection_threads VALUES ('t3-session', 'project', 'Renamed thread', NULL, '{"model":"gpt-test"}', '2026-08-13T12:00:00Z', '2026-08-13T12:03:00Z', NULL);
+    INSERT INTO projection_threads SELECT 'deleted', project_id, title, worktree_path, model_selection_json, created_at, updated_at, updated_at FROM projection_threads;
+    INSERT INTO projection_thread_messages VALUES ('deleted', 'user', 'Hidden', '2026-08-13T12:00:00Z');
+    INSERT INTO projection_thread_messages VALUES ('t3-session', 'user', 'Fix it', '2026-08-13T12:00:00Z');
+    INSERT INTO projection_thread_messages VALUES ('t3-session', 'assistant', 'Done', '2026-08-13T12:03:00Z');
+    INSERT INTO projection_thread_activities VALUES ('t3-session', 'tool', 'tool.updated', 'Running', '{}', '2026-08-13T12:01:00Z');
+    INSERT INTO projection_thread_activities VALUES ('t3-session', 'tool', 'tool.completed', 'Run tests', '{"data":{"toolName":"Bash","input":{"command":"npm test"},"result":{"content":"failed test","is_error":true}}}', '2026-08-13T12:02:00Z');
+  ` });
+  const adapter = createT3Adapter({ home });
+  assert.equal(adapter.installed(), true);
+  const [session] = adapter.discover();
+  assert.deepEqual(adapter.discover().map((item) => item.id), ["t3-session"]);
+  assert.equal(session.title, "Renamed thread");
+  assert.equal(session.project, "/work/demo");
+  assert.equal(session.messageCount, 2);
+  assert.equal(session.model, "gpt-test");
+  assert.equal(adapter.discover({ query: "t3-s", limit: 1 })[0].id, session.id);
+  assert.deepEqual(adapter.discover({ query: "' OR 1=1 --" }), []);
+  const messages = adapter.load(session);
+  assert.deepEqual(messages.map((item) => item.role), ["user", "tool", "assistant"]);
+  assert.equal(messages[1].name, "Bash");
+  assert.deepEqual(messages[1].input, { command: "npm test" });
+  assert.equal(messages[1].output, "failed test");
+  assert.equal(messages[1].status, "failed");
+  assert.equal(messages[2].content, "Done");
+});

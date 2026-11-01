@@ -1,4 +1,4 @@
-import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { Fragment, useCallback, useEffect, useMemo, useState } from "react";
 import { createRoot } from "react-dom/client";
 
 import "./viewer.css";
@@ -199,72 +199,97 @@ function isToolItem(item) {
   return !["user_message", "assistant_message", "reasoning", "plan", "error", "unknown"].includes(item.itemType);
 }
 
-function useWirePages(pageUrls) {
-  const [items, setItems] = useState([]);
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState(null);
-  const [loadedPages, setLoadedPages] = useState(0);
-  const nextPageRef = useRef(0);
-  const loadingRef = useRef(false);
-
-  const loadNext = useCallback(async () => {
-    const index = nextPageRef.current;
-    if (loadingRef.current || index >= pageUrls.length) return;
-    loadingRef.current = true;
-    setLoading(true);
-    setError(null);
-    try {
-      const response = await fetch(pageUrls[index], { headers: { accept: "application/json" } });
-      if (!response.ok) throw new Error(`Could not load transcript page ${index + 1} (${response.status}).`);
-      const page = await response.json();
-      if (page.protocol !== "t3code.provider-runtime/v2" || !Array.isArray(page.events)) {
-        throw new Error(`Transcript page ${index + 1} is unreadable.`);
-      }
-      const completedItems = page.events
-        .filter((event) => event?.type === "item.completed" && event.payload)
-        .map((event) => ({ ...event.payload, itemId: event.itemId, createdAt: event.createdAt }));
-      setItems((current) => [...current, ...completedItems]);
-      nextPageRef.current = index + 1;
-      setLoadedPages(index + 1);
-    } catch (cause) {
-      setError(cause instanceof Error ? cause.message : String(cause));
-    } finally {
-      loadingRef.current = false;
-      setLoading(false);
-    }
-  }, [pageUrls]);
-
-  useEffect(() => { void loadNext(); }, [loadNext]);
-  return { items, loading, error, loadNext, loadedPages, hasMore: loadedPages < pageUrls.length };
+function pageFromUrl(total) {
+  const value = new URL(window.location.href).searchParams.get("page") || "1";
+  const page = /^\d+$/.test(value) ? Number(value) : 1;
+  return Math.max(1, Math.min(total || 1, Number.isSafeInteger(page) ? page : 1));
 }
 
-function PageSentinel({ loading, error, hasMore, loadNext, loadedPages }) {
-  const ref = useRef(null);
-  useEffect(() => {
-    if (!hasMore || error || !ref.current) return undefined;
-    const observer = new IntersectionObserver((entries) => {
-      if (entries.some((entry) => entry.isIntersecting)) void loadNext();
-    }, { rootMargin: "800px 0px" });
-    observer.observe(ref.current);
-    return () => observer.disconnect();
-  }, [error, hasMore, loadNext, loadedPages]);
+function useWirePage(pageUrls) {
+  const [page, setPage] = useState(() => pageFromUrl(pageUrls.length));
+  const [attempt, setAttempt] = useState(0);
+  const [state, setState] = useState({ page: 0, items: [], loading: true, error: null });
 
-  if (error) {
-    return <div className="page-status error" role="alert"><span>{error}</span><button type="button" onClick={loadNext}>Try again</button></div>;
-  }
-  if (!hasMore || loadedPages === 0) return null;
-  return <div ref={ref} className="page-status" aria-live="polite">{loading ? "Loading more…" : "Scroll for more"}</div>;
+  useEffect(() => {
+    const onPopState = () => setPage(pageFromUrl(pageUrls.length));
+    window.addEventListener("popstate", onPopState);
+    return () => window.removeEventListener("popstate", onPopState);
+  }, [pageUrls.length]);
+
+  useEffect(() => {
+    const controller = new AbortController();
+    setState({ page, items: [], loading: true, error: null });
+    async function load() {
+      try {
+        const url = pageUrls[page - 1];
+        if (!url) {
+          setState({ page, items: [], loading: false, error: null });
+          return;
+        }
+        const response = await fetch(url, { headers: { accept: "application/json" }, signal: controller.signal });
+        if (!response.ok) throw new Error(`Could not load transcript page ${page} (${response.status}).`);
+        const data = await response.json();
+        if (data.protocol !== "t3code.provider-runtime/v2" || data.page !== page || !Array.isArray(data.events)) {
+          throw new Error(`Transcript page ${page} is unreadable.`);
+        }
+        const items = data.events
+          .filter((event) => event?.type === "item.completed" && event.payload)
+          .map((event) => ({ ...event.payload, itemId: event.itemId, createdAt: event.createdAt }));
+        if (!controller.signal.aborted) setState({ page, items, loading: false, error: null });
+      } catch (cause) {
+        if (!controller.signal.aborted) setState({ page, items: [], loading: false, error: cause instanceof Error ? cause.message : String(cause) });
+      }
+    }
+    void load();
+    return () => controller.abort();
+  }, [page, pageUrls, attempt]);
+
+  const navigate = useCallback((value) => {
+    const next = Math.max(1, Math.min(pageUrls.length || 1, value));
+    if (next === page) return;
+    const url = new URL(window.location.href);
+    if (next === 1) url.searchParams.delete("page");
+    else url.searchParams.set("page", String(next));
+    window.history.pushState(null, "", url);
+    setPage(next);
+  }, [page, pageUrls.length]);
+  const current = state.page === page ? state : { items: [], loading: true, error: null };
+  return { ...current, page, navigate, retry: () => setAttempt((value) => value + 1) };
+}
+
+function PageNavigation({ page, total, navigate }) {
+  if (total < 2) return null;
+  return (
+    <nav className="page-navigation" aria-label="Transcript pages">
+      <button type="button" disabled={page === 1} onClick={() => navigate(page - 1)}>← Previous</button>
+      <form onSubmit={(event) => {
+        event.preventDefault();
+        const value = Number(new FormData(event.currentTarget).get("page"));
+        if (Number.isInteger(value)) navigate(value);
+      }}>
+        <label>Page <input key={page} name="page" type="number" min="1" max={total} defaultValue={page} aria-label="Page number" /> of {total}</label>
+        <button type="submit">Go</button>
+      </form>
+      <button type="button" disabled={page === total} onClick={() => navigate(page + 1)}>Next →</button>
+    </nav>
+  );
 }
 
 function App() {
   const payload = useMemo(readPayload, []);
   const pages = useMemo(() => payload.pages || [], [payload.pages]);
-  const { items, loading, error, loadNext, loadedPages, hasMore } = useWirePages(pages);
+  const { items, loading, error, retry, page, navigate } = useWirePage(pages);
+  const navigation = { page, total: pages.length, navigate };
+  const fragmented = items.some((item) => item.data?.wireFragment);
   return (
     <div className="app-shell">
       <SessionHeader session={payload.session} stats={payload.stats} artifacts={payload.artifacts} />
-      <Timeline messages={items} loading={loading || hasMore} />
-      <PageSentinel loading={loading} error={error} hasMore={hasMore} loadNext={loadNext} loadedPages={loadedPages} />
+      <PageNavigation {...navigation} />
+      {error ? <div className="page-status error" role="alert"><span>{error}</span><button type="button" onClick={retry}>Try again</button></div> : null}
+      {fragmented ? <p className="page-status">Long messages and tool output may continue on adjacent pages.</p> : null}
+      {!error ? <div aria-busy={loading}><Timeline key={page} messages={items} loading={loading} /></div> : null}
+      {loading ? <div className="page-status" role="status">Loading page {page}…</div> : null}
+      <PageNavigation {...navigation} />
       <footer className="site-footer">
         Shared with <a href="https://github.com/spacefast/push-session" target="_blank" rel="noreferrer">push-session</a>
       </footer>

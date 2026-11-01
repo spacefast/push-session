@@ -5,14 +5,23 @@ link. One command, no setup.
 
 ```bash
 npx push-session                 # pick any session from any agent
+npx push-session t3 <id>         # share a T3 Code thread
 npx push-session claude          # pick from one agent
 npx push-session codex <id>      # share that one, no questions
 ```
 
-It finds your local Codex, Claude Code, Gemini CLI, Cursor Agent, and Pi
+It finds your local Codex, Claude Code, Gemini CLI, Cursor Agent, Pi, and T3 Code
 sessions and puts them in one searchable list, newest first. Titles come from
 the agent itself: your rename first, then the agent's own title, then your first
 real prompt. Subagent and sidechain transcripts stay out of the list.
+
+The picker shows 50 sessions per page. Use Next/Previous to browse older sessions,
+or choose "Search all sessions" to search across every page. `--limit <n>` changes
+the page size; it does not hide older sessions.
+
+T3 Code threads are read from `~/.t3/userdata/state.sqlite`, or from
+`$T3CODE_HOME/userdata/state.sqlite` when set. Reading T3 sessions requires
+Node 22.13+ or the `sqlite3` command on older Node releases.
 
 ## Where your sessions go
 
@@ -47,9 +56,12 @@ Options: `--pick-space`, `--space <id>`, `--new-space`, `--team <slug>`,
 
 A paginated, read-only transcript: your messages, the agent's replies in
 Markdown, and its tool calls folded into readable groups ("Ran 3 commands and
-changed 2 files"). Light and dark. Claude sessions also bring along the HTML and
-Markdown artifacts they published, and Codex sessions bring the ChatGPT Sites
-they built (details below).
+changed 2 files"). Previous/Next and a page-number field navigate the transcript.
+The URL remembers the page, browser Back/Forward works, and only the selected
+page loads and renders. Failed requests can be retried. Long messages and tool
+output can continue on the next page. Light and dark. Claude sessions also bring
+along the HTML and Markdown artifacts they published, and Codex sessions bring
+the ChatGPT Sites they built (details below).
 
 ## Recover Claude Code artifacts
 

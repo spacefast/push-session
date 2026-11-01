@@ -367,41 +367,64 @@ async function selectAgentAndSession({ requestedAgent, requestedSession, interac
   let sessions;
   if (adapter) {
     if (!adapter.installed()) throw new Error(`${adapter.label} doesn't look installed here.`);
-    sessions = adapter.discover({ limit: requestedSession ? Infinity : limit, query: requestedSession })
+    sessions = adapter.discover({ limit: Infinity, query: requestedSession })
       .map((session) => ({ session, adapter }));
     if (sessions.length === 0) throw new Error(`No ${adapter.label} sessions here yet.`);
   } else {
-    sessions = scanAgents(availableAdapters, { limit })
+    sessions = scanAgents(availableAdapters, { limit: Infinity })
       .flatMap((entry) => entry.sessions.map((session) => ({ session, adapter: entry.adapter })))
       .sort((left, right) => byRecent(left.session, right.session));
-    if (sessions.length === 0) throw new Error("No agent sessions found on this machine. Run Codex, Claude Code, Gemini CLI, Cursor Agent, or Pi first.");
+    if (sessions.length === 0) throw new Error("No agent sessions found on this machine. Run Codex, Claude Code, Gemini CLI, Cursor Agent, Pi, or T3 Code first.");
   }
 
   if (requestedSession) {
     return resolveSession(sessions, requestedSession);
   }
   if (!interactive) throw new Error(`Pass a session ID when there's no terminal to ask in: npx push-session ${adapter.id} <session-id>`);
-  const visible = sessions.slice(0, adapter ? limit : Math.max(limit, 200));
-  const options = visible.map((entry, index) => ({
-    value: index,
-    label: entry.session.title,
-    hint: [
-      adapter ? null : entry.adapter.label,
-      relativeDate(entry.session.updatedAt || entry.session.createdAt),
-      shortProject(entry.session.project),
-      shortId(entry.session.id),
-    ].filter(Boolean).join(" · "),
-    search: [entry.session.title, entry.session.project, entry.session.id, entry.adapter.label, entry.adapter.id].filter(Boolean).join(" "),
-  }));
-  const value = await prompts.autocomplete({
-    message: adapter ? `Which ${adapter.label} session?` : "Which session do you want to share?",
-    placeholder: "Type to search by title, project, agent, or ID",
-    options,
-    filter: matchesOption,
-    maxItems: 12,
-  });
-  cancelIfNeeded(prompts, value);
-  return visible[value];
+  let page = 0;
+  let search = "";
+  while (true) {
+    const matches = sessions.filter((entry) => matchesOption(search, {
+      search: [entry.session.title, entry.session.project, entry.session.id, entry.adapter.label, entry.adapter.id].filter(Boolean).join(" "),
+    }));
+    const pageCount = Math.max(1, Math.ceil(matches.length / limit));
+    const visible = matches.slice(page * limit, (page + 1) * limit);
+    const options = visible.map((entry, index) => ({
+      value: index,
+      label: entry.session.title,
+      hint: [
+        adapter ? null : entry.adapter.label,
+        relativeDate(entry.session.updatedAt || entry.session.createdAt),
+        shortProject(entry.session.project),
+        shortId(entry.session.id),
+      ].filter(Boolean).join(" · "),
+      search: [entry.session.title, entry.session.project, entry.session.id, entry.adapter.label, entry.adapter.id].filter(Boolean).join(" "),
+    }));
+    if (page > 0) options.push({ value: "previous", label: "← Previous page" });
+    if (page + 1 < pageCount) options.push({ value: "next", label: "Next page →" });
+    options.push({ value: "search", label: "Search all sessions…" });
+    if (search) options.push({ value: "clear", label: "Clear search" });
+    const message = adapter ? `Which ${adapter.label} session?` : "Which session do you want to share?";
+    const value = await prompts.autocomplete({
+      message: `${message} (${matches.length} sessions, page ${page + 1}/${pageCount})`,
+      placeholder: "Filter this page, or choose Search all sessions",
+      options,
+      filter: (search, option) => typeof option.value === "string" || matchesOption(search, option),
+      maxItems: 12,
+    });
+    cancelIfNeeded(prompts, value);
+    if (value === "previous") page -= 1;
+    else if (value === "next") page += 1;
+    else if (value === "search") {
+      const query = await prompts.text({ message: "Search by title, project, agent, or ID", initialValue: search });
+      cancelIfNeeded(prompts, query);
+      search = String(query || "").trim();
+      page = 0;
+    } else if (value === "clear") {
+      search = "";
+      page = 0;
+    } else return visible[value];
+  }
 }
 
 function matchesOption(search, option) {
@@ -476,6 +499,7 @@ Usage
   npx push-session artifacts <list|export|publish>
 
 Agents
+  t3             T3 Code
   codex          OpenAI Codex CLI
   claude         Anthropic Claude Code
   gemini         Google Gemini CLI
@@ -492,7 +516,7 @@ Options
   --space <id>   Publish to this Space once; your default stays put
   --new-space    Start a fresh "${OWNED_SPACE_TITLE}" Space and make it the default
   --team <slug>  Team for a new Space, if you're in more than one
-  --limit <n>    Sessions shown per agent in the picker (default: 50)
+  --limit <n>    Sessions per picker page (default: 50)
   --dry-run      Render everything, upload nothing
   --json         Print one machine-readable result
   --api-url      Override the Spacefast API origin
