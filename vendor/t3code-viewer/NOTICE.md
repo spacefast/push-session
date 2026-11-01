@@ -28,6 +28,12 @@ The extraction lives in `t3/MessagesTimeline.jsx`, `t3/ChatMarkdown.jsx`, and
 state, virtualization, approvals, rewind, diff panels, syntax highlighting, and
 math rendering are excluded at that boundary.
 
+The pagination controls and URL navigation in `Viewer.jsx` are push-session's
+static-hosting integration. T3's agent scanner and importer are internal server
+services, coupled to its Effect runtime, project services, and persistence. They
+are not distributed as a standalone importer package. The adapters in
+`src/agents` read the local agent formats without requiring a running T3 server.
+
 Published transcript pages use T3 Code's provider-runtime item vocabulary
 (`user_message`, `assistant_message`, `command_execution`, `file_change`,
 `web_search`, and the other tool lifecycle item types).

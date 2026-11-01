@@ -272,3 +272,88 @@ test("honors Pi's configured flat session directory", (context) => {
 function writeJsonl(filePath, entries) {
   fs.writeFileSync(filePath, `${entries.map((entry) => JSON.stringify(entry)).join("\n")}\n`);
 }
+
+test("discovers T3 threads and maps messages and completed tool activity", async (context) => {
+  const { execFileSync } = await import("node:child_process");
+  const { createT3Adapter } = await import("../src/agents/t3.js");
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), "push-session-t3-"));
+  context.after(() => fs.rmSync(home, { recursive: true, force: true }));
+  fs.mkdirSync(path.join(home, "userdata"));
+  const file = path.join(home, "userdata", "state.sqlite");
+  execFileSync("sqlite3", [file], { input: `
+    CREATE TABLE projection_projects (project_id TEXT, workspace_root TEXT);
+    CREATE TABLE projection_threads (thread_id TEXT, project_id TEXT, title TEXT, worktree_path TEXT, model_selection_json TEXT, created_at TEXT, updated_at TEXT, deleted_at TEXT);
+    CREATE TABLE projection_thread_messages (thread_id TEXT, role TEXT, text TEXT, created_at TEXT);
+    CREATE TABLE projection_thread_activities (thread_id TEXT, activity_id TEXT, kind TEXT, summary TEXT, payload_json TEXT, created_at TEXT);
+    INSERT INTO projection_projects VALUES ('project', '/work/demo');
+    INSERT INTO projection_threads VALUES ('t3-session', 'project', 'Renamed thread', NULL, '{"model":"gpt-test"}', '2026-08-13T12:00:00Z', '2026-08-13T12:03:00Z', NULL);
+    INSERT INTO projection_threads SELECT 'deleted', project_id, title, worktree_path, model_selection_json, created_at, updated_at, updated_at FROM projection_threads;
+    INSERT INTO projection_thread_messages VALUES ('deleted', 'user', 'Hidden', '2026-08-13T12:00:00Z');
+    INSERT INTO projection_thread_messages VALUES ('t3-session', 'user', 'Fix it', '2026-08-13T12:00:00Z');
+    INSERT INTO projection_thread_messages VALUES ('t3-session', 'assistant', 'Done', '2026-08-13T12:03:00Z');
+    INSERT INTO projection_thread_activities VALUES ('t3-session', 'tool', 'tool.updated', 'Running', '{}', '2026-08-13T12:01:00Z');
+    INSERT INTO projection_thread_activities VALUES ('t3-session', 'tool', 'tool.completed', 'Run tests', '{"data":{"toolName":"Bash","input":{"command":"npm test"},"result":{"content":"failed test","is_error":true}}}', '2026-08-13T12:02:00Z');
+  ` });
+  const adapter = createT3Adapter({ home });
+  assert.equal(adapter.installed(), true);
+  const [session] = adapter.discover();
+  assert.deepEqual(adapter.discover().map((item) => item.id), ["t3-session"]);
+  assert.equal(session.title, "Renamed thread");
+  assert.equal(session.project, "/work/demo");
+  assert.equal(session.messageCount, 2);
+  assert.equal(session.model, "gpt-test");
+  assert.equal(adapter.discover({ query: "t3-s", limit: 1 })[0].id, session.id);
+  assert.deepEqual(adapter.discover({ query: "' OR 1=1 --" }), []);
+  const messages = adapter.load(session);
+  assert.deepEqual(messages.map((item) => item.role), ["user", "tool", "assistant"]);
+  assert.equal(messages[1].name, "Bash");
+  assert.deepEqual(messages[1].input, { command: "npm test" });
+  assert.equal(messages[1].output, "failed test");
+  assert.equal(messages[1].status, "failed");
+  assert.equal(messages[2].content, "Done");
+
+  // Upgrading leaves the V1 file frozen. New threads live only in the V2 copy.
+  const v2File = path.join(home, "userdata", "statev2.sqlite");
+  execFileSync("sqlite3", [v2File], { input: `
+    CREATE TABLE projection_projects (project_id TEXT, workspace_root TEXT);
+    CREATE TABLE orchestration_v2_projection_threads (thread_id TEXT, project_id TEXT, title TEXT, created_at TEXT, updated_at TEXT, deleted_at TEXT, payload_json TEXT);
+    CREATE TABLE orchestration_v2_projection_messages (thread_id TEXT, role TEXT, created_at TEXT, payload_json TEXT);
+    CREATE TABLE orchestration_v2_projection_turn_items (thread_id TEXT, turn_item_id TEXT, ordinal INTEGER, type TEXT, status TEXT, updated_at TEXT, payload_json TEXT);
+    INSERT INTO projection_projects VALUES ('project', '/work/demo');
+    INSERT INTO orchestration_v2_projection_threads VALUES ('v2-session', 'project', 'Active V2 thread', '2026-11-01T12:00:00Z', '2026-11-01T12:03:00Z', NULL, '{"modelSelection":{"model":"gpt-v2"},"worktreePath":"/work/v2"}');
+    INSERT INTO orchestration_v2_projection_threads SELECT 'child', project_id, title, created_at, updated_at, NULL, '{"lineage":{"parentThreadId":"v2-session","relationshipToParent":"subagent"}}' FROM orchestration_v2_projection_threads;
+    INSERT INTO orchestration_v2_projection_threads SELECT 'deleted', project_id, title, created_at, updated_at, updated_at, '{}' FROM orchestration_v2_projection_threads WHERE thread_id = 'v2-session';
+    INSERT INTO orchestration_v2_projection_threads VALUES ('fork-session', 'project', 'Forked thread', '2026-11-01T11:00:00Z', '2026-11-01T11:03:00Z', NULL, '{"lineage":{"parentThreadId":"v2-session","relationshipToParent":"fork"}}');
+    INSERT INTO orchestration_v2_projection_threads VALUES ('side-chat', 'project', 'Side chat', '2026-11-01T11:00:00Z', '2026-11-01T11:03:00Z', NULL, '{"lineage":{"sideChat":true}}');
+    INSERT INTO orchestration_v2_projection_messages VALUES ('fork-session', 'user', '2026-11-01T11:00:00Z', '{"text":"Fork prompt"}');
+    INSERT INTO orchestration_v2_projection_messages VALUES ('side-chat', 'user', '2026-11-01T11:00:00Z', '{"text":"Side prompt"}');
+    INSERT INTO orchestration_v2_projection_messages VALUES ('child', 'user', '2026-11-01T12:00:00Z', '{"text":"Child prompt"}');
+    INSERT INTO orchestration_v2_projection_messages VALUES ('deleted', 'user', '2026-11-01T12:00:00Z', '{"text":"Deleted prompt"}');
+    INSERT INTO orchestration_v2_projection_messages VALUES ('v2-session', 'user', '2026-11-01T12:00:00Z', '{"text":"New prompt"}');
+    INSERT INTO orchestration_v2_projection_messages VALUES ('v2-session', 'assistant', '2026-11-01T12:03:00Z', '{"text":"New reply"}');
+    INSERT INTO orchestration_v2_projection_turn_items VALUES ('v2-session', 'command', 1, 'command_execution', 'failed', '2026-11-01T12:02:00Z', '{"input":"npm test","output":"v2 failure","exitCode":1,"startedAt":"2026-11-01T12:01:00Z"}');
+    INSERT INTO orchestration_v2_projection_turn_items VALUES ('v2-session', 'dynamic', 2, 'dynamic_tool', 'completed', '2026-11-01T12:02:00Z', '{"toolName":"Read","input":{"file_path":"src/app.js"},"output":"source contents"}');
+  ` });
+  const [active] = adapter.discover();
+  assert.deepEqual(adapter.discover().map((item) => item.id), ["v2-session", "fork-session"]);
+  const [fork] = adapter.discover({ query: "fork-session" });
+  assert.equal(fork.title, "Forked thread");
+  assert.equal(adapter.load(fork)[0].content, "Fork prompt");
+  assert.equal(active.filePath, v2File);
+  assert.equal(active.project, "/work/v2");
+  assert.equal(active.model, "gpt-v2");
+  assert.equal(active.messageCount, 2);
+  const current = adapter.load(active);
+  assert.deepEqual(current.map((item) => item.role), ["user", "tool", "tool", "assistant"]);
+  assert.equal(current[0].content, "New prompt");
+  assert.deepEqual(current[1].input, { cmd: "npm test" });
+  assert.equal(current[1].output, "v2 failure");
+  assert.equal(current[1].status, "failed");
+  assert.equal(current[2].name, "Read");
+  assert.equal(current[2].output, "source contents");
+  assert.equal(current[3].content, "New reply");
+  fs.rmSync(file);
+  assert.equal(adapter.installed(), true, "fresh V2 installations need no V1 file");
+  assert.equal(adapter.discover({ query: "v2-s" })[0].id, "v2-session");
+  assert.equal(createT3Adapter({ stateDir: path.dirname(v2File) }).discover()[0].filePath, v2File);
+});

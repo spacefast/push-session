@@ -24,3 +24,33 @@
   color: var(--foreground);
   cursor: pointer;
 }
+
+.page-navigation {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 12px;
+  margin: 20px 0;
+  font-size: 13px;
+}
+
+.page-navigation form, .page-navigation label {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.page-navigation button, .page-navigation input {
+  min-height: 36px;
+  padding: 6px 10px;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  background: var(--card);
+  color: var(--foreground);
+}
+
+.page-navigation input { width: 72px; }
+.page-navigation button { cursor: pointer; }
+.page-navigation button:disabled { opacity: .4; cursor: default; }
+.page-navigation :focus-visible { outline: 2px solid var(--foreground); outline-offset: 2px; }
