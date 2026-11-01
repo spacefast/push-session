@@ -98,7 +98,7 @@ function discoverV2(filePath, options) {
     ORDER BY t.updated_at DESC`);
   return rows.filter((row) => !options.query || row.thread_id.startsWith(options.query)).flatMap((row) => {
     const thread = safeJson(row.payload_json) || {};
-    if (thread.lineage?.parentThreadId) return [];
+    if (thread.lineage?.relationshipToParent === "subagent" || thread.lineage?.sideChat === true) return [];
     return [{
       agent: "t3", agentLabel: "T3 Code", id: row.thread_id,
       title: cleanTitle(row.title) || "Untitled T3 Code session",

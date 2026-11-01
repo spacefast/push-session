@@ -321,8 +321,12 @@ test("discovers T3 threads and maps messages and completed tool activity", async
     CREATE TABLE orchestration_v2_projection_turn_items (thread_id TEXT, turn_item_id TEXT, ordinal INTEGER, type TEXT, status TEXT, updated_at TEXT, payload_json TEXT);
     INSERT INTO projection_projects VALUES ('project', '/work/demo');
     INSERT INTO orchestration_v2_projection_threads VALUES ('v2-session', 'project', 'Active V2 thread', '2026-11-01T12:00:00Z', '2026-11-01T12:03:00Z', NULL, '{"modelSelection":{"model":"gpt-v2"},"worktreePath":"/work/v2"}');
-    INSERT INTO orchestration_v2_projection_threads SELECT 'child', project_id, title, created_at, updated_at, NULL, '{"lineage":{"parentThreadId":"v2-session"}}' FROM orchestration_v2_projection_threads;
+    INSERT INTO orchestration_v2_projection_threads SELECT 'child', project_id, title, created_at, updated_at, NULL, '{"lineage":{"parentThreadId":"v2-session","relationshipToParent":"subagent"}}' FROM orchestration_v2_projection_threads;
     INSERT INTO orchestration_v2_projection_threads SELECT 'deleted', project_id, title, created_at, updated_at, updated_at, '{}' FROM orchestration_v2_projection_threads WHERE thread_id = 'v2-session';
+    INSERT INTO orchestration_v2_projection_threads VALUES ('fork-session', 'project', 'Forked thread', '2026-11-01T11:00:00Z', '2026-11-01T11:03:00Z', NULL, '{"lineage":{"parentThreadId":"v2-session","relationshipToParent":"fork"}}');
+    INSERT INTO orchestration_v2_projection_threads VALUES ('side-chat', 'project', 'Side chat', '2026-11-01T11:00:00Z', '2026-11-01T11:03:00Z', NULL, '{"lineage":{"sideChat":true}}');
+    INSERT INTO orchestration_v2_projection_messages VALUES ('fork-session', 'user', '2026-11-01T11:00:00Z', '{"text":"Fork prompt"}');
+    INSERT INTO orchestration_v2_projection_messages VALUES ('side-chat', 'user', '2026-11-01T11:00:00Z', '{"text":"Side prompt"}');
     INSERT INTO orchestration_v2_projection_messages VALUES ('child', 'user', '2026-11-01T12:00:00Z', '{"text":"Child prompt"}');
     INSERT INTO orchestration_v2_projection_messages VALUES ('deleted', 'user', '2026-11-01T12:00:00Z', '{"text":"Deleted prompt"}');
     INSERT INTO orchestration_v2_projection_messages VALUES ('v2-session', 'user', '2026-11-01T12:00:00Z', '{"text":"New prompt"}');
@@ -331,7 +335,10 @@ test("discovers T3 threads and maps messages and completed tool activity", async
     INSERT INTO orchestration_v2_projection_turn_items VALUES ('v2-session', 'dynamic', 2, 'dynamic_tool', 'completed', '2026-11-01T12:02:00Z', '{"toolName":"Read","input":{"file_path":"src/app.js"},"output":"source contents"}');
   ` });
   const [active] = adapter.discover();
-  assert.deepEqual(adapter.discover().map((item) => item.id), ["v2-session"]);
+  assert.deepEqual(adapter.discover().map((item) => item.id), ["v2-session", "fork-session"]);
+  const [fork] = adapter.discover({ query: "fork-session" });
+  assert.equal(fork.title, "Forked thread");
+  assert.equal(adapter.load(fork)[0].content, "Fork prompt");
   assert.equal(active.filePath, v2File);
   assert.equal(active.project, "/work/v2");
   assert.equal(active.model, "gpt-v2");
