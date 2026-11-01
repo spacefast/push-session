@@ -53,6 +53,7 @@ export async function run(argv = process.argv.slice(2), dependencies = {}) {
     limit: parsed.options.limit,
     availableAdapters,
     prompts,
+    warn,
   });
   const messages = await selection.adapter.load(selection.session);
   if (messages.length === 0) throw new Error("That session has nothing to share yet.");
@@ -358,7 +359,7 @@ function canReplaceSavedSpace(error) {
   return error?.stage === "initial_publish" && [401, 403, 404].includes(error?.status);
 }
 
-async function selectAgentAndSession({ requestedAgent, requestedSession, interactive, limit, availableAdapters, prompts }) {
+async function selectAgentAndSession({ requestedAgent, requestedSession, interactive, limit, availableAdapters, prompts, warn }) {
   const adapter = requestedAgent ? findAdapter(requestedAgent, availableAdapters) : null;
   if (requestedAgent && !adapter) {
     throw new Error(`Unknown agent "${requestedAgent}". Try one of: ${availableAdapters.map((item) => item.id).join(", ")}.`);
@@ -371,7 +372,7 @@ async function selectAgentAndSession({ requestedAgent, requestedSession, interac
       .map((session) => ({ session, adapter }));
     if (sessions.length === 0) throw new Error(`No ${adapter.label} sessions here yet.`);
   } else {
-    sessions = scanAgents(availableAdapters, { limit: Infinity })
+    sessions = scanAgents(availableAdapters, { limit: Infinity, onError: (adapter, error) => warn(`Could not read ${adapter.label} sessions: ${error.message}`) })
       .flatMap((entry) => entry.sessions.map((session) => ({ session, adapter: entry.adapter })))
       .sort((left, right) => byRecent(left.session, right.session));
     if (sessions.length === 0) throw new Error("No agent sessions found on this machine. Run Codex, Claude Code, Gemini CLI, Cursor Agent, Pi, or T3 Code first.");

@@ -23,6 +23,13 @@ export function findAdapter(name, available = adapters) {
 export function scanAgents(available = adapters, options = {}) {
   return available
     .filter((adapter) => adapter.installed())
-    .map((adapter) => ({ adapter, sessions: adapter.discover(options) }))
+    .map((adapter) => {
+      try {
+        return { adapter, sessions: adapter.discover(options) };
+      } catch (error) {
+        options.onError?.(adapter, error);
+        return { adapter, sessions: [] };
+      }
+    })
     .filter((entry) => entry.sessions.length > 0);
 }

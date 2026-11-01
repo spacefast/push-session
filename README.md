@@ -19,8 +19,9 @@ The picker shows 50 sessions per page. Use Next/Previous to browse older session
 or choose "Search all sessions" to search across every page. `--limit <n>` changes
 the page size; it does not hide older sessions.
 
-T3 Code threads are read from `~/.t3/userdata/state.sqlite`, or from
-`$T3CODE_HOME/userdata/state.sqlite` when set. Reading T3 sessions requires
+T3 Code threads are read from `~/.t3/userdata/statev2.sqlite`, falling back to
+`state.sqlite` for V1 installations. `T3CODE_HOME` changes the base directory;
+`T3CODE_STATE_DIR` overrides the state directory directly. Reading T3 sessions requires
 Node 22.13+ or the `sqlite3` command on older Node releases.
 
 ## Where your sessions go

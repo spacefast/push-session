@@ -4,6 +4,8 @@ import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 
+import { createT3Adapter } from "../src/agents/t3.js";
+
 import { formatShareLinks, run } from "../src/cli.js";
 import { loadConfig, saveConfig } from "../src/config.js";
 
@@ -33,20 +35,29 @@ test("explicit session lookup checks every matching ID despite the picker limit"
   }), /ambiguous \(2 matches\)/);
 });
 
-test("one searchable picker lists every agent's sessions newest first", async () => {
+test("one searchable picker lists every agent's sessions newest first despite an unreadable agent", async (context) => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), "push-session-broken-t3-"));
+  context.after(() => fs.rmSync(home, { recursive: true, force: true }));
+  fs.mkdirSync(path.join(home, "userdata"));
+  fs.writeFileSync(path.join(home, "userdata", "statev2.sqlite"), "not a database");
+  const t3 = createT3Adapter({ home });
+  const warnings = [];
   const codex = fakeAdapter("codex");
   codex.discover = () => [{ agent: "codex", agentLabel: "Codex", id: "codex-old", title: "Fix the router", project: "/work/api", updatedAt: 1_000 }];
   const claude = fakeAdapter("claude");
   claude.discover = () => [{ agent: "claude", agentLabel: "Claude Code", id: "claude-new", title: "Draft the launch post", updatedAt: 2_000 }];
   const prompts = fakePrompts([0]);
 
-  const result = await run(["--dry-run"], { adapters: [codex, claude], prompts, interactive: true, log: () => {} });
+  const result = await run(["--dry-run"], { adapters: [t3, codex, claude], prompts, interactive: true, log: () => {}, warn: (message) => warnings.push(message) });
 
   const [picker] = prompts.asked;
   assert.deepEqual(picker.options.filter((option) => typeof option.value === "number").map((option) => option.label), ["Draft the launch post", "Fix the router"]);
   assert.match(picker.options[1].hint, /^Codex · .* · \/work\/api · codex-old$/);
   assert.deepEqual(picker.options.filter((option) => typeof option.value === "number" && picker.filter("codex api", option)).map((option) => option.label), ["Fix the router"]);
   assert.equal(result.sessionId, "claude-new");
+  assert.equal(warnings.length, 1);
+  assert.match(warnings[0], /Could not read T3 Code sessions/);
+  await assert.rejects(run(["t3", "--dry-run"], { adapters: [t3], interactive: true, prompts }), /not a database/);
 });
 
 test("picker pages across all sessions and searches beyond the page limit", async () => {
