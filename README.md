@@ -47,11 +47,24 @@ Claim it to keep the links, or run `sf login` to publish into your own Space.
 Each session gets its own route and a view-only share link scoped to it. Nobody
 can browse the rest of the Space with it.
 
-> Sessions can contain code, file paths, commands, and secrets. Review before
-> sharing. Anyone with the link can read it.
+Known secret formats in messages, tool inputs and outputs, and session titles
+are replaced with `[redacted: <kind>]` before rendering. This is on by default;
+use `--no-redact` to share the raw transcript. Detection covers known API token
+prefixes (Anthropic, OpenAI, GitHub, GitLab, Slack, Stripe live keys, AWS access
+key IDs, Google, and npm), private-key PEM blocks, Authorization Bearer/Basic
+values, secret-named assignments, and URL passwords.
+
+`--dry-run` reports `redactions: N` with a per-kind breakdown. `--dry-run --json`
+includes the numeric `redactions` total and a `redactionCounts` object. Counts
+are replacements, including repeated occurrences and copies in session titles.
+Publishing reports the same counts. Local session files are never changed.
+
+> Sessions can contain code, file paths, commands, and secrets. Redaction covers
+> known formats, not arbitrary secrets, and does not scan recovered artifact or
+> Site source files. Review before sharing. Anyone with the link can read it.
 
 Options: `--pick-space`, `--space <id>`, `--new-space`, `--team <slug>`,
-`--limit <n>`, `--dry-run`, `--json`, and `--api-url <url>`.
+`--limit <n>`, `--dry-run`, `--no-redact`, `--json`, and `--api-url <url>`.
 
 ## What the page shows
 

@@ -3,6 +3,12 @@ import test from "node:test";
 
 import { parseArgs } from "../src/args.js";
 
+test("redacts by default and supports the boolean --no-redact opt-out", () => {
+  assert.equal(parseArgs([]).options.redact, true);
+  assert.equal(parseArgs(["claude", "one", "--no-redact"]).options.redact, false);
+  assert.throws(() => parseArgs(["--no-redact=false"]), /Unknown option/);
+});
+
 test("parses the positional agent and session flow", () => {
   const result = parseArgs(["codex", "abc-123", "--json", "--space", "spc_one"]);
   assert.equal(result.agent, "codex");

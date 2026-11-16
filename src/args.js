@@ -9,6 +9,7 @@ export function parseArgs(argv, env = process.env) {
     limit: 50,
     newSpace: false,
     pickSpace: false,
+    redact: true,
     space: undefined,
     team: undefined,
     version: false,
@@ -29,6 +30,7 @@ export function parseArgs(argv, env = process.env) {
     else if (value === "-v" || value === "--version") options.version = true;
     else if (value === "--json") options.json = true;
     else if (value === "--dry-run") options.dryRun = true;
+    else if (value === "--no-redact") options.redact = false;
     else if (value === "--new-space") options.newSpace = true;
     else if (value === "--pick-space") options.pickSpace = true;
     else if (value.includes("=")) {

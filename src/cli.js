@@ -21,6 +21,7 @@ import {
   selectPublishState,
 } from "./config.js";
 import { listSpaces, publishSession } from "./spacefast.js";
+import { redactMessages, redactText } from "./redact.js";
 import { packageVersion } from "./version.js";
 
 export const OWNED_SPACE_TITLE = "AI sessions";
@@ -55,7 +56,7 @@ export async function run(argv = process.argv.slice(2), dependencies = {}) {
     prompts,
     warn,
   });
-  const messages = await selection.adapter.load(selection.session);
+  let messages = await selection.adapter.load(selection.session);
   if (messages.length === 0) throw new Error("That session has nothing to share yet.");
 
   let artifacts = [];
@@ -78,6 +79,18 @@ export async function run(argv = process.argv.slice(2), dependencies = {}) {
       warn(`Could not recover this session's ChatGPT Sites: ${error.message}. Publishing the transcript without them.`);
     }
   }
+  let redactionCounts = {};
+  if (parsed.options.redact) {
+    ({ messages, counts: redactionCounts } = redactMessages(messages));
+    // Session titles can be copied from the first user message.
+    if (selection.session.title) {
+      const title = redactText(selection.session.title);
+      selection.session = { ...selection.session, title: title.text };
+      for (const [kind, count] of Object.entries(title.counts)) redactionCounts[kind] = (redactionCounts[kind] || 0) + count;
+    }
+  }
+  const redactions = Object.values(redactionCounts).reduce((total, count) => total + count, 0);
+  const redactionSummary = `redactions: ${redactions}${redactions ? ` (${Object.entries(redactionCounts).map(([kind, count]) => `${kind}: ${count}`).join(", ")})` : ""}`;
   const bundle = renderSessionWithArtifacts(selection.session, messages, artifacts, { sites });
   if (parsed.options.dryRun) {
     const result = {
@@ -86,6 +99,8 @@ export async function run(argv = process.argv.slice(2), dependencies = {}) {
       sessionId: selection.session.id,
       title: selection.session.title,
       messages: messages.length,
+      redactions,
+      redactionCounts,
       bytes: bundle.totalBytes,
       pages: bundle.pageCount,
       artifacts: bundle.artifactCount,
@@ -97,7 +112,7 @@ export async function run(argv = process.argv.slice(2), dependencies = {}) {
     };
     if (parsed.options.json) log(JSON.stringify(result));
     else {
-      prompts.note(`${result.messages} transcript entries\n${result.pages} JSON page${result.pages === 1 ? "" : "s"}\n${result.artifacts} Claude artifact${result.artifacts === 1 ? "" : "s"}\n${result.sites} ChatGPT Site${result.sites === 1 ? "" : "s"}\n${result.bytes.toLocaleString()} bytes\n${result.route}`, "Ready to publish");
+      prompts.note(`${result.messages} transcript entries\n${result.pages} JSON page${result.pages === 1 ? "" : "s"}\n${result.artifacts} Claude artifact${result.artifacts === 1 ? "" : "s"}\n${result.sites} ChatGPT Site${result.sites === 1 ? "" : "s"}\n${redactionSummary}\n${result.bytes.toLocaleString()} bytes\n${result.route}`, "Ready to publish");
       prompts.outro("Dry run. Nothing left your machine.");
     }
     return result;
@@ -123,6 +138,8 @@ export async function run(argv = process.argv.slice(2), dependencies = {}) {
     sessionId: selection.session.id,
     title: selection.session.title,
     url: result.shareUrl,
+    redactions,
+    redactionCounts,
     landingUrl: result.landingUrl,
     pages: bundle.pageCount,
     artifacts: bundle.artifactCount,
@@ -140,6 +157,7 @@ export async function run(argv = process.argv.slice(2), dependencies = {}) {
     log(JSON.stringify(output));
   } else {
     (dependencies.write || ((text) => process.stdout.write(text)))(formatShareLinks(output));
+    if (redactions > 0) prompts.log.info(redactionSummary);
     if (output.claimUrl) {
       prompts.outro("Claim the Space to keep these links. Or run `sf login` once and sessions land in your own Space.");
     } else {
@@ -519,6 +537,7 @@ Options
   --team <slug>  Team for a new Space, if you're in more than one
   --limit <n>    Sessions per picker page (default: 50)
   --dry-run      Render everything, upload nothing
+  --no-redact    Keep raw transcript secrets (redaction is on by default)
   --json         Print one machine-readable result
   --api-url      Override the Spacefast API origin
   -h, --help     Show help

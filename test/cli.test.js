@@ -5,9 +5,91 @@ import path from "node:path";
 import test from "node:test";
 
 import { createT3Adapter } from "../src/agents/t3.js";
+import { renderSessionWithArtifacts } from "../src/artifacts/session.js";
 
 import { formatShareLinks, run } from "../src/cli.js";
 import { loadConfig, saveConfig } from "../src/config.js";
+
+test("dry-run JSON reports redactions and --no-redact renders the raw transcript", async () => {
+  const token = `ghp_${"a".repeat(36)}`;
+  const messages = [{ role: "user", content: token }, { role: "tool", input: { password: "abcdefgh" }, output: "Done" }];
+  const adapter = fakeAdapter("claude", messages);
+  for (const flags of [[], ["--no-redact"]]) {
+    const logs = [];
+    const result = await run(["claude", "session-one", "--dry-run", "--json", ...flags], {
+      adapters: [adapter], discoverSessionArtifacts: async () => [],
+      log: (text) => logs.push(text), interactive: false,
+      resolveAuth: () => assert.fail("dry-run must not resolve auth"),
+      fetchImpl: () => assert.fail("dry-run must not upload"),
+    });
+    assert.deepEqual(JSON.parse(logs[0]), result);
+    assert.equal(logs.length, 1);
+    assert.equal(result.redactions, flags.length ? 0 : 2);
+    assert.deepEqual(result.redactionCounts, flags.length ? {} : { github: 1, assignment: 1 });
+    if (flags.length) {
+      assert.equal(result.bytes, renderSessionWithArtifacts(adapter.discover()[0], messages).totalBytes);
+    }
+  }
+  assert.equal(messages[0].content, token);
+  assert.equal(messages[1].input.password, "abcdefgh");
+});
+
+test("Ready to publish includes the total and per-kind breakdown", async () => {
+  const notes = [];
+  const prompts = fakePrompts([]);
+  prompts.note = (text, title) => notes.push({ text, title });
+  await run(["claude", "session-one", "--dry-run"], {
+    adapters: [fakeAdapter("claude", [{ role: "user", content: "PASSWORD=abcdefgh" }])],
+    discoverSessionArtifacts: async () => [], prompts, interactive: false,
+  });
+  assert.equal(notes[0].title, "Ready to publish");
+  assert.match(notes[0].text, /redactions: 1 \(assignment: 1\)/);
+});
+
+test("publishes redacted pages and titles, reports counts, and honors the raw opt-out", async (context) => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "push-session-redact-"));
+  context.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const token = `sk-ant-${"a".repeat(80)}`;
+  const messages = [
+    { role: "user", content: token },
+    { role: "assistant", content: token },
+    { role: "tool", id: "tool-one", name: "exec", summary: token, input: { nested: [token] }, output: token },
+  ];
+  const adapter = fakeAdapter("claude", messages);
+  const session = { ...adapter.discover()[0], title: token };
+  adapter.discover = () => [session];
+  for (const flags of [[], ["--no-redact"]]) {
+    const files = [];
+    const summaries = [];
+    const prompts = fakePrompts([]);
+    prompts.log.info = (text) => summaries.push(text);
+    const output = await run(["claude", "session-one", ...flags], {
+      adapters: [adapter], discoverSessionArtifacts: async () => [],
+      env: { PUSH_SESSION_CONFIG: path.join(root, `config-${flags.length}.json`) },
+      resolveAuth: async () => null, interactive: false, prompts, write: () => {},
+      fetchImpl: async (url, init) => {
+        if (String(url).endsWith("/share-links")) return jsonResponse(201, { data: { url: "https://sessions.example/shared" } });
+        for (const file of init.body.getAll("files")) files.push({ name: file.name, text: await file.text() });
+        return jsonResponse(201, { data: { space: { id: "spc_test", liveUrl: "https://sessions.example/" }, claim: { key: "fake-claim-key" }, next: { action: "done" } } });
+      },
+    });
+    const page = files.find((file) => file.name.endsWith("pages/0001.json"));
+    const html = files.find((file) => file.name.endsWith("index.html"));
+    assert.ok(page);
+    assert.ok(html);
+    assert.equal(page.text.includes(token), Boolean(flags.length));
+    assert.equal(html.text.includes(token), Boolean(flags.length));
+    assert.equal(output.title, flags.length ? token : "[redacted: anthropic]");
+    assert.equal(output.redactions, flags.length ? 0 : 6);
+    assert.deepEqual(output.redactionCounts, flags.length ? {} : { anthropic: 6 });
+    assert.deepEqual(summaries, flags.length ? [] : ["redactions: 6 (anthropic: 6)"]);
+    const details = JSON.parse(page.text).events.map((event) => event.payload.detail);
+    assert.equal(details[0], flags.length ? token : "[redacted: anthropic]");
+    assert.equal(details[1], flags.length ? token : "[redacted: anthropic]");
+  }
+  assert.equal(session.title, token);
+  assert.equal(messages[2].input.nested[0], token);
+});
 
 test("prints each share URL on its own unbroken output line", () => {
   const accessUrl = "https://sessions.example/sessions/session-id?__=access-token";
