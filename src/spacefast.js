@@ -9,6 +9,7 @@ const MAX_PUBLISH_ATTEMPTS = 10;
 const MAX_FOLLOW_STEPS = 80;
 const DEFAULT_INLINE_LIMIT = 100 * 1024 * 1024;
 const UPLOAD_CONCURRENCY = 6;
+export const MANAGE_SIGN_IN_MESSAGE = "Sign in with `sf login` to manage shared sessions.";
 
 export async function publishSession(input) {
   const fetchImpl = input.fetchImpl || globalThis.fetch;
@@ -16,10 +17,13 @@ export async function publishSession(input) {
 
   const apiUrl = (input.apiUrl || DEFAULT_API_URL).replace(/\/$/, "");
   const files = prepareFiles(input);
+  const deletePaths = (input.deletePaths || []).map(normalizeFilePath);
+  const deleting = files.length === 0 && deletePaths.length > 0;
+  if (deletePaths.length && !input.spaceId) throw new Error("Deleting files requires an existing Space.");
   const entryPath = input.entryPath ? normalizeFilePath(input.entryPath) : files[0]?.path;
-  if (!entryPath) throw new Error("No session entry file was provided.");
-  const basePath = normalizeFilePath(input.basePath || path.posix.dirname(entryPath));
-  if (!entryPath.startsWith(`${basePath}/`) || !files.some((file) => file.path === entryPath)) {
+  if (!entryPath && !deleting) throw new Error("No session entry file was provided.");
+  const basePath = deleting ? null : normalizeFilePath(input.basePath || path.posix.dirname(entryPath));
+  if (!deleting && (!entryPath.startsWith(`${basePath}/`) || !files.some((file) => file.path === entryPath))) {
     throw new Error("The session entry file must be inside the shared directory.");
   }
   if (files.some((file) => !file.path.startsWith(`${basePath}/`))) {
@@ -36,6 +40,7 @@ export async function publishSession(input) {
   const publishPayload = {
     ...(requestedSpace && { spaceId: requestedSpace }),
     publishMode: "additive",
+    ...(deletePaths.length && { deletePaths }),
     ...(!requestedSpace && { space: { title: input.spaceTitle || "Shared AI sessions" } }),
     ...(!requestedSpace && input.teamId && { teamId: input.teamId }),
     ...(!requestedSpace && input.access && { access: input.access }),
@@ -82,8 +87,24 @@ export async function publishSession(input) {
   const initialData = initial?.data;
   const space = data?.space || initialData?.space;
   if (!space?.id) throw new Error("Spacefast returned a publish receipt without a space ID.");
+  if (deleting) {
+    // A deletion-only version uploads nothing, so Spacefast never finalizes it
+    // on its own; it would sit at "uploaded" and the files would stay live.
+    const version = data?.version || (data?.id?.startsWith?.("ver_") ? data : null) || initialData?.version;
+    if (version?.status === "ready") return { receipt, space, deletedPaths: deletePaths };
+    if (!version?.id) throw new Error("Spacefast returned no version to finalize for the file removal.");
+    const finalized = await spaceRequest(
+      { apiUrl, spaceId: space.id, accessToken: bearerToken, fetchImpl },
+      `versions/${encodeURIComponent(version.id)}/finalize`,
+      { method: "POST", body: { channel: "live" } },
+    );
+    if (finalized?.data?.status !== "ready") {
+      throw new Error(`Spacefast did not activate the file removal (version status: ${finalized?.data?.status || "unknown"}).`);
+    }
+    return { receipt: finalized, space, deletedPaths: deletePaths };
+  }
 
-  const shareLink = await createScopedShareLink({
+  const linkOptions = {
     apiUrl,
     bearerToken,
     fetchImpl,
@@ -92,7 +113,18 @@ export async function publishSession(input) {
     basePath,
     title: input.session?.title,
     shareName: input.shareName,
-  });
+  };
+  let shareLink;
+  if (requestedSpace && basePath.startsWith("sessions/")) {
+    try {
+      const links = await listShareLinks({ apiUrl, accessToken: bearerToken, fetchImpl, spaceId: space.id });
+      shareLink = links.find((link) => reusableShareLink(link, basePath));
+    } catch (error) {
+      if (!(input.claimToken && !input.accessToken && !exchangedAccessToken && [401, 403].includes(error.status))) throw error;
+      (input.warn || console.error)(`${MANAGE_SIGN_IN_MESSAGE} Could not check existing links; creating a new share link.`);
+    }
+  }
+  shareLink ||= await createScopedShareLink(linkOptions);
   const liveUrl = space.liveUrl || initialData?.space?.liveUrl || null;
   const landingUrl = liveUrl ? new URL(entryPath, ensureTrailingSlash(liveUrl)).href : null;
   const claim = data?.claim || initialData?.claim;
@@ -275,6 +307,77 @@ export async function listSpaces({ apiUrl = DEFAULT_API_URL, accessToken, query,
   const body = await responseJson(response);
   if (!response.ok) throw apiError(response, body);
   return (Array.isArray(body?.data) ? body.data : []).filter((space) => space && !space.anonymous);
+}
+
+export async function listShareLinks(options) {
+  const body = await spaceRequest(options, "share-links");
+  if (!Array.isArray(body?.data)) throw new Error("Spacefast returned an unreadable share-link list.");
+  return body.data;
+}
+
+export async function revokeShareLink({ linkId, ...options }) {
+  return spaceRequest(options, `share-links/${encodeURIComponent(linkId)}`, { method: "DELETE" });
+}
+
+export async function listFiles({ prefix = "", ...options }) {
+  const query = new URLSearchParams();
+  if (prefix) query.set("q", prefix);
+  const body = await spaceRequest(options, `files${query.size ? `?${query}` : ""}`);
+  if (!Array.isArray(body?.data?.files)) throw new Error("Spacefast returned an unreadable file list.");
+  // The API's q filter is a substring search, not a directory-prefix filter.
+  return { ...body.data, files: body.data.files.filter((file) => file.path.startsWith(prefix)) };
+}
+
+export async function readSessionMetadata({ versionId, route, ...options }) {
+  if (!versionId) return null;
+  const query = new URLSearchParams({ path: route });
+  const body = await spaceRequest(options, `versions/${encodeURIComponent(versionId)}/files/links?${query}`);
+  const url = body?.data?.links?.[route]?.url;
+  if (!url) throw new Error("Spacefast returned no read link for the session.");
+  // Signed file URLs carry their own authority; never forward the API token.
+  const response = await (options.fetchImpl || globalThis.fetch)(url);
+  if (!response.ok) throw apiError(response, await responseJson(response));
+  const html = await response.text();
+  const data = html.match(/<script id="push-session-data" type="application\/json">([\s\S]*?)<\/script>/)?.[1];
+  if (!data) return null;
+  try { return JSON.parse(data).session || null; } catch { return null; }
+}
+
+async function spaceRequest({ apiUrl = DEFAULT_API_URL, spaceId, accessToken, claimToken, fetchImpl = globalThis.fetch }, resource, { method = "GET", body: requestBody } = {}) {
+  const response = await fetchImpl(`${apiUrl.replace(/\/$/, "")}/v1/spaces/${encodeURIComponent(spaceId)}/${resource}`, {
+    method,
+    headers: {
+      ...requestHeaders({ bearerToken: accessToken || claimToken }),
+      ...(requestBody && { "content-type": "application/json" }),
+    },
+    ...(requestBody && { body: JSON.stringify(requestBody) }),
+  });
+  const body = await responseJson(response);
+  if (!response.ok) throw apiError(response, body);
+  return body;
+}
+
+export function isSessionShareLink(link, basePath) {
+  const root = `/${basePath}`;
+  const includes = link.resources?.include;
+  return Boolean(includes?.length
+    && includes.every((value) => value === root || value.startsWith(`${root}/`)));
+}
+
+function reusableShareLink(link, basePath) {
+  const root = `/${basePath}`;
+  const landing = link.landingPath?.replace(/\/$/, "");
+  const constraints = link.constraints || {};
+  return link.url && link.active && !link.revokedAt
+    && (!constraints.expiresAt || Date.parse(constraints.expiresAt) > Date.now())
+    && (!constraints.notBefore || Date.parse(constraints.notBefore) <= Date.now())
+    && (!constraints.maxUses || link.openCount < constraints.maxUses)
+    && link.target?.kind === "live"
+    && (landing === root || landing === `${root}/index.html`)
+    && isSessionShareLink(link, basePath)
+    && link.resources.include.includes(root) && link.resources.include.includes(`${root}/**`)
+    && !link.resources.exclude?.length
+    && link.capabilities?.length === 1 && link.capabilities[0] === "page.view";
 }
 
 export function sessionRoute(session) {

@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { listSpaces, publishSession, sessionRoute } from "../src/spacefast.js";
+import { listFiles, listShareLinks, listSpaces, publishSession, revokeShareLink, sessionRoute } from "../src/spacefast.js";
 import { packageVersion } from "../src/version.js";
 
 test("builds a session route from one sanitized session ID", () => {
@@ -81,6 +81,7 @@ test("updates a selected space with bearer authentication", async () => {
   const requests = [];
   const fetchImpl = async (url, init) => {
     requests.push({ url: String(url), init });
+    if (init.method === "GET") return jsonResponse(200, { data: [] });
     if (String(url).endsWith("/share-links")) return jsonResponse(201, { data: { url: "https://sessions.example/__/owned-link" } });
     return jsonResponse(201, {
       data: {
@@ -129,6 +130,7 @@ test("exchanges a claimed anonymous key and continues on the same space", async 
       return jsonResponse(200, { data: { credential: { accessToken: "continued-access" } } });
     }
     if (requestUrl.endsWith("/share-links")) {
+      if (init.method === "GET") return jsonResponse(200, { data: [] });
       return jsonResponse(201, { data: { url: "https://sessions.example/__/continued-link" } });
     }
     publishAttempts += 1;
@@ -235,6 +237,131 @@ test("accepts artifact-specific space and share names", async () => {
   assert.equal(publishPayload.space.title, "Shared AI artifacts");
   const sharePayload = JSON.parse(requests[1].init.body);
   assert.equal(sharePayload.name, "Claude artifact: One");
+});
+
+test("lists links, filters file prefixes, and revokes with the selected credential", async () => {
+  const requests = [];
+  const api = {
+    apiUrl: "https://api.example/", spaceId: "space/one", claimToken: "claim",
+    fetchImpl: async (url, init) => {
+      requests.push({ url: String(url), init });
+      if (init.method === "DELETE") return new Response(null, { status: 204 });
+      if (String(url).endsWith("/share-links")) return jsonResponse(200, { data: [{ id: "link/one" }] });
+      return jsonResponse(200, { data: { versionId: "v1", files: [
+        { path: "sessions/one/index.html" }, { path: "sessions/one/pages/0001.json" },
+        { path: "sessions/one-other/index.html" }, { path: "backup/sessions/one/index.html" },
+      ] } });
+    },
+  };
+  assert.deepEqual(await listShareLinks(api), [{ id: "link/one" }]);
+  assert.deepEqual((await listFiles({ ...api, prefix: "sessions/one/" })).files.map((file) => file.path), [
+    "sessions/one/index.html", "sessions/one/pages/0001.json",
+  ]);
+  await revokeShareLink({ ...api, linkId: "link/one" });
+  assert.equal(requests[1].url, "https://api.example/v1/spaces/space%2Fone/files?q=sessions%2Fone%2F");
+  assert.equal(requests[2].url, "https://api.example/v1/spaces/space%2Fone/share-links/link%2Fone");
+  assert.ok(requests.every((request) => request.init.headers.authorization === "Bearer claim"));
+  await assert.rejects(listShareLinks({ ...api, fetchImpl: async () => jsonResponse(200, { data: {} }) }), /unreadable share-link list/);
+  await assert.rejects(listFiles({ ...api, fetchImpl: async () => jsonResponse(403, { detail: "Forbidden" }) }), (error) => error.status === 403);
+});
+
+test("reuses only an active unexpired live view-only session link", async () => {
+  const valid = {
+    id: "reuse", url: "https://sessions.example/__/reuse", active: true, revokedAt: null,
+    landingPath: "/sessions/one", target: { kind: "live" }, capabilities: ["page.view"],
+    resources: { include: ["/sessions/one", "/sessions/one/**"], exclude: [] }, constraints: {},
+  };
+  const invalid = [
+    { active: false }, { revokedAt: "2020-01-01T00:00:00Z" },
+    { constraints: { expiresAt: "2020-01-01T00:00:00Z" } },
+    { constraints: { notBefore: "2999-01-01T00:00:00Z" } },
+    { constraints: { maxUses: 1 }, openCount: 1 }, { url: null },
+    { target: { kind: "version", versionId: "old" } }, { landingPath: "/sessions/other" },
+    { resources: { include: ["/**"] } }, { capabilities: ["page.view", "comments.write"] },
+    { resources: { include: valid.resources.include, exclude: ["/sessions/one/pages/**"] } },
+  ].map((overrides, index) => ({ ...valid, id: `invalid-${index}`, ...overrides }));
+  for (const includeValid of [true, false]) {
+    const requests = [];
+    const result = await publishSession({
+      session: { id: "one" }, html: "new", spaceId: "spc_one", accessToken: "token",
+      fetchImpl: async (url, init) => {
+        requests.push({ url: String(url), method: init.method });
+        if (init.method === "GET") return jsonResponse(200, { data: [...invalid, ...(includeValid ? [valid] : [])] });
+        if (String(url).endsWith("/share-links")) return jsonResponse(201, { data: { url: "https://sessions.example/__/new" } });
+        return jsonResponse(201, { data: { space: { id: "spc_one" }, next: { action: "done" } } });
+      },
+    });
+    assert.equal(result.shareUrl, includeValid ? valid.url : "https://sessions.example/__/new");
+    assert.equal(requests.length, includeValid ? 2 : 3);
+  }
+});
+
+test("claim-token link lookup denial warns and continues publishing, but other errors stop", async () => {
+  for (const status of [401, 403, 500]) {
+    const warnings = [];
+    let created = 0;
+    const promise = publishSession({
+      session: { id: "one" }, html: "new", spaceId: "spc_one", claimToken: "claim",
+      warn: (message) => warnings.push(message),
+      fetchImpl: async (url, init) => {
+        if (init.method === "GET") return jsonResponse(status, { detail: "Lookup denied" });
+        if (String(url).endsWith("/share-links")) {
+          created += 1;
+          return jsonResponse(201, { data: { url: "https://sessions.example/__/new" } });
+        }
+        return jsonResponse(201, { data: { space: { id: "spc_one" }, next: { action: "done" } } });
+      },
+    });
+    if (status === 500) {
+      await assert.rejects(promise, /Lookup denied/);
+      assert.equal(created, 0);
+    } else {
+      assert.equal((await promise).shareUrl, "https://sessions.example/__/new");
+      assert.match(warnings[0], /Sign in with `sf login` to manage shared sessions/);
+    }
+  }
+});
+
+test("deletion-only publishes finalize the stalled version without creating links and reject unsafe paths", async () => {
+  const requests = [];
+  // Mirrors the live API: the publish asks for a poll, the version comes back
+  // "uploaded" with no next step, and only an explicit finalize activates it.
+  const fetchImpl = async (url, init) => {
+    requests.push({ url: String(url), init });
+    if (String(url).endsWith("/finalize")) return jsonResponse(200, { data: { id: "ver_del", status: "ready", fileCount: 2 } });
+    if (String(url).endsWith("/versions/ver_del")) return jsonResponse(200, { data: { id: "ver_del", status: "uploaded", fileCount: 0 } });
+    return jsonResponse(201, {
+      data: {
+        space: { id: "spc_one" },
+        version: { id: "ver_del", status: "uploaded" },
+        next: { action: "poll", url: "/v1/spaces/spc_one/versions/ver_del", retryAfter: 0 },
+      },
+    });
+  };
+  const deletePaths = ["sessions/one/index.html", "sessions/one/pages/0001.json"];
+  const result = await publishSession({ spaceId: "spc_one", accessToken: "token", deletePaths, fetchImpl });
+  assert.deepEqual(JSON.parse(requests[0].init.body.get("payload")), { spaceId: "spc_one", publishMode: "additive", deletePaths });
+  assert.equal(requests[0].init.body.getAll("files").length, 0);
+  assert.deepEqual(result.deletedPaths, deletePaths);
+  assert.equal(requests.length, 3);
+  assert.match(requests[2].url, /\/v1\/spaces\/spc_one\/versions\/ver_del\/finalize$/);
+  assert.equal(requests[2].init.method, "POST");
+  assert.deepEqual(JSON.parse(requests[2].init.body), { channel: "live" });
+  assert.equal(requests[2].init.headers.authorization, "Bearer token");
+  await assert.rejects(publishSession({ deletePaths, fetchImpl }), /existing Space/);
+  await assert.rejects(publishSession({ spaceId: "spc_one", deletePaths: ["sessions/one/../two/index.html"], fetchImpl }), /Invalid publish path/);
+  assert.equal(requests.length, 3);
+});
+
+test("deletion-only publishes fail loudly when finalize does not activate the version", async () => {
+  const fetchImpl = async (url) => {
+    if (String(url).endsWith("/finalize")) return jsonResponse(200, { data: { id: "ver_del", status: "failed" } });
+    return jsonResponse(201, { data: { space: { id: "spc_one" }, version: { id: "ver_del", status: "uploaded" } } });
+  };
+  await assert.rejects(
+    publishSession({ spaceId: "spc_one", accessToken: "token", deletePaths: ["sessions/one/index.html"], fetchImpl }),
+    /did not activate the file removal \(version status: failed\)/,
+  );
 });
 
 function jsonResponse(status, body) {

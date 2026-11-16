@@ -20,7 +20,17 @@ import {
   resolveApiUrl,
   selectPublishState,
 } from "./config.js";
-import { listSpaces, publishSession } from "./spacefast.js";
+import {
+  isSessionShareLink,
+  listFiles,
+  listShareLinks,
+  listSpaces,
+  MANAGE_SIGN_IN_MESSAGE,
+  publishSession,
+  readSessionMetadata,
+  revokeShareLink,
+  sessionRoute,
+} from "./spacefast.js";
 import { packageVersion } from "./version.js";
 
 export const OWNED_SPACE_TITLE = "AI sessions";
@@ -33,6 +43,8 @@ export async function run(argv = process.argv.slice(2), dependencies = {}) {
   const parsed = parseArgs(argv, env);
   if (parsed.options.help) return printHelp();
   if (parsed.options.version) return console.log(packageVersion);
+  if (["list", "unshare"].includes(parsed.agent)) return manageSessions(parsed, dependencies);
+  if (parsed.options.keepFiles || parsed.options.yes) throw new Error("--keep-files and --yes are only supported by unshare.");
   const log = dependencies.log || console.log;
   const prompts = dependencies.prompts || clack;
   const interactive = dependencies.interactive ?? Boolean(process.stdin.isTTY && process.stdout.isTTY && !parsed.options.json);
@@ -231,7 +243,7 @@ async function publishOwned(context) {
           ? "Your sf login was rejected. Run `sf login` again."
           : "SPACEFAST_TOKEN was rejected. Check the token or unset it.");
       }
-      const gone = target.id && [403, 404].includes(error?.status);
+      const gone = target.id && error?.stage === "initial_publish" && [403, 404].includes(error?.status);
       if (gone && parsed.options.space) {
         throw new Error(`Space "${parsed.options.space}" isn't one you can publish to.`);
       }
@@ -302,6 +314,7 @@ async function publishAnonymous(context) {
     accessToken: publishAccessToken,
     claimToken,
     fetchImpl: dependencies.fetchImpl,
+    warn,
   });
   let result;
   try {
@@ -335,6 +348,117 @@ async function publishAnonymous(context) {
     }
   }
   return result;
+}
+
+async function manageSessions(parsed, dependencies) {
+  const { options } = parsed;
+  const unshare = parsed.agent === "unshare";
+  if (unshare && !parsed.sessionId) throw new Error("Usage: push-session unshare <session-id|route|url> [--keep-files] [--yes]");
+  if (!unshare && (parsed.sessionId || options.keepFiles || options.yes)) throw new Error("Usage: push-session list [--json]");
+  if (options.newSpace || options.pickSpace || options.team || options.dryRun) {
+    throw new Error("list and unshare use an existing Space; --new-space, --pick-space, --team, and --dry-run are not supported.");
+  }
+  const env = dependencies.env || process.env;
+  const log = dependencies.log || console.log;
+  const prompts = dependencies.prompts || clack;
+  const interactive = !options.json && (dependencies.interactive ?? Boolean(process.stdin.isTTY && process.stdout.isTTY));
+  if (unshare && !interactive && !options.yes && !options.json) {
+    throw new Error("Unsharing without a terminal requires --yes or --json.");
+  }
+  const config = loadConfig(env);
+  const apiUrl = resolveApiUrl(config, options);
+  const auth = await (dependencies.resolveAuth || resolveAuth)({ env, apiUrl, keyring: dependencies.keyring });
+  const savedAnonymous = apiUrl === resolveApiUrl(config, {}) ? config.space : null;
+  const savedOwned = ownedSpaceFor(config, apiUrl);
+  const space = options.space
+    ? [savedOwned, savedAnonymous].find((space) => space?.id === options.space) || { id: options.space }
+    : (auth && savedOwned) || savedAnonymous;
+  if (!space?.id) throw new Error("No remembered session Space. Publish a session first or pass --space <id>.");
+  const accessToken = auth?.accessToken || (savedAnonymous?.id === space.id ? savedAnonymous.accessToken : null);
+  const claimToken = !accessToken && savedAnonymous?.id === space.id ? savedAnonymous.claimToken : null;
+  if (!accessToken && !claimToken) throw new Error(MANAGE_SIGN_IN_MESSAGE);
+  const api = { apiUrl, spaceId: space.id, accessToken, claimToken, fetchImpl: dependencies.fetchImpl };
+  try {
+    const links = await listShareLinks(api);
+    if (!unshare) {
+      const catalog = await listFiles({ ...api, prefix: "sessions/" });
+      const sessions = [];
+      for (const file of catalog.files) {
+        if (!/^sessions\/[^/]+\/index\.html$/.test(file.path)) continue;
+        const basePath = file.path.slice(0, -"/index.html".length);
+        const sessionLinks = links.filter((link) => isSessionShareLink(link, basePath) && !link.revokedAt);
+        const metadata = await readSessionMetadata({ ...api, versionId: catalog.versionId, route: file.path });
+        sessions.push({
+          sessionId: metadata?.threadId || basePath.slice("sessions/".length),
+          title: metadata?.title || sessionLinks[0]?.name?.replace(/^Session: /, "") || basePath,
+          agent: metadata?.provider || null,
+          route: basePath,
+          shareLinks: sessionLinks.map((link) => ({ id: link.id, url: link.url, active: link.active, createdAt: link.createdAt })),
+          createdAt: metadata?.createdAt || sessionLinks[0]?.createdAt || null,
+        });
+      }
+      const result = { spaceId: space.id, sessions };
+      if (options.json) log(JSON.stringify(result));
+      else if (!sessions.length) log("No published sessions in this Space.");
+      else for (const session of sessions) {
+        log(`${session.title}\n  Agent: ${session.agent || "Unknown"}\n  Route: ${session.route}\n  Created: ${session.createdAt || "Unknown"}\n${session.shareLinks.map((link) => `  Link: ${link.url || "Unavailable"}${link.active === false ? " (inactive)" : ""}`).join("\n") || "  Links: none"}`);
+      }
+      return result;
+    }
+
+    const basePath = resolveSharedRoute(parsed.sessionId, links, space);
+    const matchingLinks = links.filter((link) => isSessionShareLink(link, basePath) && !link.revokedAt);
+    const catalog = options.keepFiles ? null : await listFiles({ ...api, prefix: `${basePath}/` });
+    const deletePaths = catalog?.files.map((file) => file.path) || [];
+    if (!matchingLinks.length && !deletePaths.length) throw new Error(`No published session found at ${basePath}.`);
+    if (interactive && !options.yes) {
+      const confirmed = await prompts.confirm({
+        message: `Unshare ${basePath}? Revoke ${matchingLinks.length} link(s) and ${options.keepFiles ? "keep its files" : `delete ${deletePaths.length} file(s)`}.`,
+        initialValue: false,
+      });
+      if (prompts.isCancel(confirmed) || !confirmed) {
+        log("Nothing unshared.");
+        return { cancelled: true };
+      }
+    }
+    const revokedLinkIds = [];
+    try {
+      for (const link of matchingLinks) {
+        await revokeShareLink({ ...api, linkId: link.id });
+        revokedLinkIds.push(link.id);
+      }
+      if (deletePaths.length) await publishSession({ ...api, deletePaths });
+    } catch (error) {
+      error.message = `${error.message} Unshare stopped after revoking ${revokedLinkIds.length} of ${matchingLinks.length} links; file removal is not confirmed. Rerun unshare to finish.`;
+      throw error;
+    }
+    const result = { spaceId: space.id, route: basePath, revokedLinkIds, deletedPaths: deletePaths, keptFiles: options.keepFiles };
+    log(options.json ? JSON.stringify(result) : `Unshared ${basePath}: revoked ${revokedLinkIds.length} link(s), ${options.keepFiles ? "kept files" : `deleted ${deletePaths.length} file(s)`}.`);
+    return result;
+  } catch (error) {
+    if (claimToken && [401, 403].includes(error.status)) error.message = `${MANAGE_SIGN_IN_MESSAGE} ${error.message}`;
+    throw error;
+  }
+}
+
+function resolveSharedRoute(value, links, space) {
+  if ([".", ".."].includes(value)) throw new Error("Expected a session ID, sessions/<id> route, or session share URL.");
+  let route = value;
+  if (/^https?:\/\//i.test(value)) {
+    const url = new URL(value);
+    const linked = links.find((link) => link.url === url.href);
+    if (linked) route = linked.landingPath;
+    else {
+      const origins = [space.liveUrl, ...links.map((link) => link.url)].filter(Boolean).map((value) => new URL(value).origin);
+      if (!origins.includes(url.origin)) throw new Error("That URL does not belong to the selected Space. Use a session ID or route.");
+      route = decodeURIComponent(url.pathname);
+    }
+  } else if (!value.includes("/")) {
+    route = sessionRoute({ id: value });
+  }
+  const match = route.match(/^\/?(sessions\/([a-zA-Z0-9._-]+))(?:\/index\.html|\/)?$/);
+  if (!match || [".", ".."].includes(match[2])) throw new Error("Expected a session ID, sessions/<id> route, or session share URL.");
+  return match[1];
 }
 
 export function formatShareLinks(output) {
@@ -497,6 +621,8 @@ Usage
   npx push-session                       Pick any session from any agent
   npx push-session <agent>               Pick from one agent
   npx push-session <agent> <session-id>  Share that one, no questions
+  npx push-session list [--json]        List published sessions
+  npx push-session unshare <id|route|url>  Revoke links and remove session files
   npx push-session artifacts <list|export|publish>
 
 Agents
@@ -520,6 +646,8 @@ Options
   --limit <n>    Sessions per picker page (default: 50)
   --dry-run      Render everything, upload nothing
   --json         Print one machine-readable result
+  --keep-files   Unshare links but retain the session's files
+  --yes          Unshare without a confirmation prompt
   --api-url      Override the Spacefast API origin
   -h, --help     Show help
   -v, --version  Show version

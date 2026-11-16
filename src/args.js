@@ -6,12 +6,14 @@ export function parseArgs(argv, env = process.env) {
     dryRun: false,
     help: false,
     json: false,
+    keepFiles: false,
     limit: 50,
     newSpace: false,
     pickSpace: false,
     space: undefined,
     team: undefined,
     version: false,
+    yes: false,
   };
   const positionals = [];
 
@@ -28,6 +30,8 @@ export function parseArgs(argv, env = process.env) {
     if (value === "-h" || value === "--help") options.help = true;
     else if (value === "-v" || value === "--version") options.version = true;
     else if (value === "--json") options.json = true;
+    else if (value === "--keep-files") options.keepFiles = true;
+    else if (value === "--yes") options.yes = true;
     else if (value === "--dry-run") options.dryRun = true;
     else if (value === "--new-space") options.newSpace = true;
     else if (value === "--pick-space") options.pickSpace = true;
