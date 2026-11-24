@@ -136,7 +136,7 @@ function sameToken(given, token) {
   return left.length === right.length && timingSafeEqual(left, right);
 }
 
-function openBrowser(address) {
+export function openBrowser(address) {
   const [command, args] = process.platform === "darwin" ? ["open", [address]]
     : process.platform === "win32" ? ["cmd", ["/c", "start", "", address]]
       : ["xdg-open", [address]];

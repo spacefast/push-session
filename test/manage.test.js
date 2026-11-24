@@ -50,6 +50,17 @@ function fakeSpace(context) {
     if (target.pathname === "/v1/spaces/spc_one" && method === "GET") return jsonResponse(200, { data: { id: "spc_one", title: "Team sessions", liveUrl: `${LIVE}/` } });
     if (fail.has(`${method} ${target.pathname}`)) return jsonResponse(500, { title: "Unavailable" });
     calls.push(`${method} ${target.pathname.replace("/v1/spaces/spc_one", "")}`);
+    if (method === "POST" && target.pathname.endsWith("/access")) {
+      const body = JSON.parse(init.body);
+      const made = grant(`grt_${access.length}`, body.audience, body.resources.include);
+      access.push(made);
+      return jsonResponse(201, { data: made });
+    }
+    if (method === "POST" && target.pathname.endsWith("/share-links")) {
+      const body = JSON.parse(init.body);
+      access.push(grant(`grt_${access.length}`, "link", body.resources.include, { linkId: "lnk_new", landingPath: body.landingPath, url: `${LIVE}/__/new` }));
+      return jsonResponse(201, { data: { id: "lnk_new", url: `${LIVE}/__/new` } });
+    }
     if (method === "DELETE") {
       const id = target.pathname.split("/").pop();
       const at = access.findIndex((item) => item.id === id || item.subject.linkId === id);
@@ -62,7 +73,7 @@ function fakeSpace(context) {
     return jsonResponse(201, { data: { space: { id: "spc_one" }, next: { action: "done" } } });
   };
   const logged = [];
-  const dependencies = { env, fetchImpl, resolveAuth: async () => ({ accessToken: "token", source: "sf" }), log: (line) => logged.push(line), interactive: false, columns: 80 };
+  const dependencies = { env, fetchImpl, resolveAuth: async () => ({ accessToken: "token", source: "sf" }), log: (line) => logged.push(line), interactive: false, columns: 80, adapters: [] };
   const listed = () => JSON.parse(files.get("sessions/index.json")).sessions.map((session) => [session.path, session.visibility]);
   return { dependencies, env, files, access, calls, fail, logged, listed, grant };
 }
@@ -206,4 +217,151 @@ test("unshare asks first in a terminal, and both commands refuse what they canno
   const signedOut = { ...space.dependencies, resolveAuth: async () => null };
   await assert.rejects(run(["list"], signedOut), /No remembered session Space/);
   await assert.rejects(run(["list", "--space", "spc_one"], signedOut), /Sign in with `sf login`/);
+});
+
+const plain = (line) => line.replace(/\x1b\[[0-9;]*m/g, "");
+
+// Answers each question in turn and records what was asked and offered.
+function scripted(answers) {
+  const asked = [];
+  const next = async (question) => {
+    asked.push({ message: question.message, options: question.options?.map((option) => option.label) });
+    return answers.shift();
+  };
+  return { asked, prompts: { select: next, confirm: next, isCancel: () => false } };
+}
+
+test("delete is unshare under a plainer name, and never keeps the files", async (context) => {
+  const space = fakeSpace(context);
+  const result = await run(["delete", "session-private", "--yes"], space.dependencies);
+  assert.deepEqual(result.deletedPaths, ["sessions/aaaa-1111/index.html", "sessions/aaaa-1111/pages/0001.json"]);
+  assert.deepEqual(result.revokedLinkIds, ["lnk_one"]);
+  assert.equal(space.logged.at(-1), 'Deleted "Fix the importer": ended 1 share link, deleted 2 files.');
+  assert.deepEqual(space.listed(), [["sessions/bbbb-2222", "public"]]);
+
+  const { asked, prompts } = scripted([false]);
+  assert.deepEqual(await run(["delete", "session-public"], { ...space.dependencies, interactive: true, prompts }), { cancelled: true });
+  assert.equal(asked[0].message, 'Delete "Ship the pager fix"? This ends public access and deletes 1 file.');
+  assert.equal(space.logged.at(-1), "Nothing deleted.");
+
+  await assert.rejects(run(["delete", "session-public", "--keep-files"], space.dependencies), /unshare <session> --keep-files/);
+  await assert.rejects(run(["delete", "session-public"], space.dependencies), /Deleting without a terminal requires --yes or --json/);
+  await assert.rejects(run(["delete"], space.dependencies), /Usage: push-session delete <session-id\|route\|url> \[--yes\]$/);
+});
+
+// A terminal where the list's keys are pressed in turn, then left. Records what each list offered.
+function keyed(space, presses, answers = []) {
+  const lists = [];
+  const pickPublished = async (list) => {
+    lists.push(list.options.map((option) => [option.name, option.actions.map((item) => `${item.key}: ${item.label}`).join(", ")]));
+    const [action, value] = presses.shift() || [];
+    return action ? { action, value } : null;
+  };
+  const { asked, prompts } = scripted(answers);
+  return { lists, asked, dependencies: { ...space.dependencies, interactive: true, pickPublished, prompts } };
+}
+
+test("in a terminal, c on a session changes who can open it and shows the address that now opens it", async (context) => {
+  const space = fakeSpace(context);
+  const terminal = keyed(space, [["c", "sessions/aaaa-1111"], ["c", "sessions/bbbb-2222"]]);
+  const result = await run(["list"], terminal.dependencies);
+
+  assert.deepEqual(terminal.lists[0], [["Ship the pager fix", "enter: open, c: make private, d: delete"], ["Fix the importer", "enter: open, c: make public, d: delete"]]);
+  assert.deepEqual(terminal.lists[2], [["Ship the pager fix", "enter: open, c: make public, d: delete"], ["Fix the importer", "enter: open, c: make private, d: delete"]]);
+  assert.deepEqual(space.logged.map(plain), [
+    '"Fix the importer" is now public',
+    `│  ${LIVE}/sessions/aaaa-1111/`,
+    '"Ship the pager fix" is now private',
+    `│  ${LIVE}/__/new`,
+  ]);
+  assert.deepEqual(result.sessions.map((session) => [session.route, session.visibility, session.url]), [
+    ["sessions/bbbb-2222", "private", `${LIVE}/__/new`],
+    ["sessions/aaaa-1111", "public", `${LIVE}/sessions/aaaa-1111/`],
+  ]);
+  assert.deepEqual(space.listed(), [["sessions/bbbb-2222", "private"], ["sessions/aaaa-1111", "public"]]);
+  assert.deepEqual(JSON.parse(space.files.get("sessions/public.json")).sessions.map((session) => session.path), ["sessions/aaaa-1111"]);
+  assert.ok(space.access.some((item) => item.id === "grt_index"), "the sessions page stays open while a session is public");
+  assert.ok(!space.access.some((item) => item.id === "grt_public"), "the session's own public access is ended");
+
+  // The last public session going private closes the sessions page too.
+  await run(["list"], keyed(space, [["c", "sessions/aaaa-1111"]]).dependencies);
+  assert.ok(!space.access.some((item) => item.subject.audience === "public"), "nothing is public any more");
+  assert.equal(plain(space.logged.at(-1)), `│  ${LIVE}/__/one`, "its old link still opens it");
+});
+
+test("in a terminal, d deletes a session after asking, and leaving the list changes nothing", async (context) => {
+  const space = fakeSpace(context);
+  // Decline once, then delete.
+  const terminal = keyed(space, [["d", "sessions/aaaa-1111"], ["d", "sessions/aaaa-1111"]], [false, true]);
+  const result = await run(["list"], terminal.dependencies);
+  assert.equal(terminal.asked[0].message, 'Delete "Fix the importer"? This ends 1 share link and deletes 2 files.');
+  assert.deepEqual(result.sessions.map((session) => session.route), ["sessions/bbbb-2222"]);
+  assert.ok(!space.files.has("sessions/aaaa-1111/index.html"));
+  assert.ok(space.files.has("sessions/aaaa-11110/index.html"), "a session whose address starts the same is untouched");
+  assert.deepEqual(terminal.lists.at(-1), [["Ship the pager fix", "enter: open, c: make private, d: delete"]]);
+
+  space.calls.length = 0;
+  space.logged.length = 0;
+  await run(["list"], keyed(space, []).dependencies);
+  assert.deepEqual(space.logged, [], "the list on screen is the one that was picked from");
+  const opened = [];
+  await run(["list"], { ...keyed(space, [["enter", "sessions/bbbb-2222"]]).dependencies, openBrowser: (url) => opened.push(url) });
+  assert.deepEqual(opened, [`${LIVE}/sessions/bbbb-2222/`], "Enter opens the address that opens the session");
+  await run(["list", "--json"], { ...space.dependencies, interactive: true, pickPublished: () => assert.fail("--json never asks") });
+  assert.deepEqual(space.calls, [], "looking changes nothing");
+});
+
+test("in a terminal, u publishes a session again from this machine, to the address and access it has", async (context) => {
+  const space = fakeSpace(context);
+  const session = { agent: "claude", agentLabel: "Claude Code", id: "session-private", title: "Fix the importer, again" };
+  const claude = { id: "claude", label: "Claude Code", aliases: [], installed: () => true, discover: () => [session], load: () => [{ role: "assistant", content: "Done" }] };
+  const dependencies = { ...space.dependencies, adapters: [claude], discoverSessionArtifacts: async () => [] };
+  const terminal = keyed({ dependencies }, [["u", "sessions/aaaa-1111"]]);
+  await run(["list"], terminal.dependencies);
+
+  assert.deepEqual(terminal.lists[0], [["Ship the pager fix", "enter: open, c: make private, d: delete"], ["Fix the importer", "enter: open, c: make public, u: update, d: delete"]], "only a session whose agent is here can be updated");
+  assert.deepEqual(space.logged.map(plain), ['Updated "Fix the importer, again"', `│  ${LIVE}/__/one`]);
+  assert.notEqual(space.files.get("sessions/aaaa-1111/index.html"), "private page", "its page is written again at the same address");
+  assert.deepEqual(space.listed(), [["sessions/aaaa-1111", "private"], ["sessions/bbbb-2222", "public"]], "it is the newest on the list now");
+  assert.ok(space.access.some((item) => item.id === "grt_link"), "its link is kept");
+
+  // A session that is no longer on this machine says so, and the list goes on.
+  claude.discover = () => [];
+  space.logged.length = 0;
+  await run(["list"], keyed({ dependencies }, [["u", "sessions/aaaa-1111"]]).dependencies);
+  assert.match(space.logged[0], /^Could not update "Fix the importer, again": No Claude Code sessions here yet\./);
+});
+
+test("the list offers a change of access only where it would do something", async (context) => {
+  // In a Space that is itself public, a session cannot be made private from here.
+  const space = fakeSpace(context);
+  space.access.push(space.grant("grt_space", "public", ["/**"]));
+  const open = keyed(space, []);
+  await run(["list"], open.dependencies);
+  assert.deepEqual(open.lists[0].map(([, keys]) => keys), ["enter: open, d: delete", "enter: open, d: delete"]);
+
+  // A signed-out Space has no public sessions, and a publish to it would not land on a session
+  // that lives at another address than its own.
+  const signedOut = fakeSpace(context);
+  saveConfig({ version: 1, space: { id: "spc_one", accessToken: "space-credential", liveUrl: `${LIVE}/` } }, signedOut.env);
+  const anonymous = keyed(signedOut, []);
+  const installed = ["claude", "codex"].map((id) => ({ id, aliases: [], installed: () => true }));
+  await run(["list"], { ...anonymous.dependencies, adapters: installed, resolveAuth: async () => null });
+  assert.deepEqual(anonymous.lists[0].map(([, keys]) => keys), ["enter: open, d: delete", "enter: open, d: delete"]);
+});
+
+test("a change of access goes by what is open now, not by what the list last recorded", async (context) => {
+  const space = fakeSpace(context);
+  // The recorded list calls the public session private, and its grant names its folder the other way round.
+  const recorded = JSON.parse(space.files.get("sessions/index.json"));
+  recorded.sessions[1].visibility = "private";
+  space.files.set("sessions/index.json", JSON.stringify(recorded));
+  space.access.find((item) => item.id === "grt_public").resources.include.reverse();
+
+  await run(["list"], keyed(space, [["c", "sessions/aaaa-1111"], ["c", "sessions/aaaa-1111"]]).dependencies);
+  assert.ok(space.access.some((item) => item.id === "grt_index"), "the sessions page stays open for the session that is still public");
+  assert.deepEqual(space.listed(), [["sessions/bbbb-2222", "public"], ["sessions/aaaa-1111", "private"]]);
+
+  await run(["list"], keyed(space, [["c", "sessions/bbbb-2222"]]).dependencies);
+  assert.ok(!space.access.some((item) => item.subject.audience === "public"), "its public access ends in whatever shape it was granted");
 });

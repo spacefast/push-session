@@ -91,28 +91,33 @@ Options: `--pick-space`, `--space <id>`, `--new-space`, `--team <slug>`,
 ## Manage what you've shared
 
 `list` shows the sessions in your Space: the agent, the title, who can open
-each one, when it was last active, and the address that opens it.
+each one, when it was last active, and the address that opens it. In a terminal
+the list is also where you change one: move to a session with ↑/↓ and press a
+key. Enter opens it in your browser, `c` makes it public or private, `u`
+publishes it again from this machine to the same address, and `d` deletes it.
+Escape leaves the list. `--json` only lists.
 
 ```bash
 npx push-session list
 npx push-session list --json
-npx push-session unshare <session-id|route|url>
+npx push-session delete <session-id|route|url>
+npx push-session delete <session-id> --yes
 npx push-session unshare <session-id> --keep-files
-npx push-session unshare <session-id> --yes
 ```
 
-`unshare` takes a session back. It ends every share link scoped to that session
+`delete` takes a session back. It ends every share link scoped to that session
 and its public access, removes its files from the live Space (transcript pages
 and recovered artifacts included), and takes it off the sessions page. It asks
 for confirmation first. Use `--yes` to skip the prompt, or `--json` for a
 non-interactive result. Without a terminal, one of those flags is required.
-`--keep-files` ends the links and public access but leaves the files, so the
-session stays on the list for your team as a private one.
-Both commands accept `--space <id>` to manage another Space once. A signed-out
+`unshare` does the same. With `--keep-files` it ends the links and public
+access but leaves the files, so the session stays on the list for your team as
+a private one.
+These commands accept `--space <id>` to manage another Space once. A signed-out
 Space has to be claimed before it can be managed.
 
 File removal affects the live version. Earlier immutable versions, downloaded
-copies, and broader Space access are not removed by `unshare`.
+copies, and broader Space access are not removed by `delete` or `unshare`.
 
 ## What the page shows
 
