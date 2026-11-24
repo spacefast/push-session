@@ -24,6 +24,7 @@ import {
   resolveApiUrl,
   selectPublishState,
 } from "./config.js";
+import { resolvePullRequest, upsertSessionComment } from "./pr.js";
 import {
   listSpaceAccess,
   listSpaces,
@@ -59,7 +60,8 @@ export async function run(argv = process.argv.slice(2), dependencies = {}) {
   if (parsed.options.help) return printHelp();
   if (parsed.options.version) return console.log(packageVersion);
   if (["list", "unshare"].includes(parsed.agent)) return manageSessions(parsed, dependencies);
-  if (parsed.options.keepFiles || parsed.options.yes) throw new Error("--keep-files and --yes are only supported by unshare.");
+  if (parsed.options.keepFiles) throw new Error("--keep-files is only supported by unshare.");
+  if (parsed.options.yes && !parsed.options.pr) throw new Error("--yes is only supported by unshare and --pr.");
   const log = dependencies.log || console.log;
   const prompts = dependencies.prompts || clack;
   const interactive = dependencies.interactive ?? Boolean(process.stdin.isTTY && process.stdout.isTTY && !parsed.options.json);
@@ -210,6 +212,7 @@ export async function run(argv = process.argv.slice(2), dependencies = {}) {
     sessionId: selection.session.id,
     title: selection.session.title,
     url: result.shareUrl,
+    messages: messages.length,
     landingUrl: result.landingUrl,
     pages: bundle.pageCount,
     artifacts: bundle.artifactCount,
@@ -226,8 +229,42 @@ export async function run(argv = process.argv.slice(2), dependencies = {}) {
     claimUrl: result.space.claimUrl,
     claimExpiresAt: result.space.expiresAt,
   };
+  const markdown = formatSessionMarkdown(output);
+  if (parsed.options.pr) {
+    try {
+      const github = {
+        cwd: dependencies.cwd || process.cwd(),
+        env,
+        execImpl: dependencies.execImpl,
+        fetchImpl: dependencies.githubFetchImpl || dependencies.fetchImpl,
+      };
+      const pull = await resolvePullRequest({ ...github, ref: parsed.options.pr });
+      if (!pull.isPrivate && !parsed.options.yes) {
+        if (!interactive) throw new Error("Posting to a public repository requires --yes or interactive confirmation.");
+        const confirmed = await prompts.confirm({
+          message: `Post this session to ${pull.url}? Anyone who can read this public PR can view the session.`,
+          initialValue: false,
+        });
+        if (prompts.isCancel(confirmed) || confirmed !== true) throw new Error("Posting to the public repository was declined.");
+      }
+      const comment = await upsertSessionComment({
+        ...github,
+        repo: pull.repo,
+        number: pull.number,
+        marker: `<!-- push-session:${encodeURIComponent(output.sessionId)} -->`,
+        body: markdown,
+      });
+      output.pr = { ...pull, commentUrl: comment.url, action: comment.action };
+    } catch (error) {
+      output.pr = { action: "skipped", warning: error.message };
+      output.markdown = markdown;
+      warn(`Session published, but the PR comment was not attached: ${error.message} Copy the markdown to your PR instead.`);
+    }
+  }
   if (parsed.options.json) {
     log(JSON.stringify(output));
+  } else if (parsed.options.format === "markdown" || output.pr?.action === "skipped") {
+    log(markdown);
   } else {
     (dependencies.write || ((text) => process.stdout.write(text)))(formatShareLinks(output));
     if (output.claimUrl) {
@@ -680,6 +717,7 @@ export function formatShareLinks(output) {
     (output.spaceTitle || output.spaceId) && ["Space", output.spaceTitle || output.spaceId],
     output.claimUrl && ["Claim", output.claimUrl],
     output.claimExpiresAt && ["Expires", formatDate(output.claimExpiresAt)],
+    output.pr?.commentUrl && [`PR comment (${output.pr.action})`, output.pr.commentUrl],
   ].filter(Boolean);
   const bar = pc.gray("│");
   const lines = [bar, `${pc.green("◇")}  ${pc.bold("Share link")}`];
@@ -687,6 +725,12 @@ export function formatShareLinks(output) {
     lines.push(bar, `${bar}  ${pc.bold(label)}`, `${bar}  ${value}`);
   }
   return `${lines.join("\n")}\n`;
+}
+
+export function formatSessionMarkdown(output) {
+  const escape = (value) => String(value).replace(/\s+/g, " ").replace(/([\\`*_{}\[\]()#+.!|<>~&@])/g, "\\$1");
+  const url = String(output.url).replace(/[\s<>]/g, (value) => encodeURIComponent(value));
+  return `### Agent session\n\n**${escape(output.title || "Untitled session")}**\n\nAgent: ${escape(output.agent)} · ${output.messages} message${output.messages === 1 ? "" : "s"}\n\n[View the agent session](<${url}>)\n`;
 }
 
 function canReplaceSavedSpace(error) {
@@ -897,9 +941,12 @@ Options
   --public       Anyone can open the session, no link needed
   --no-redact    Publish keys, tokens and passwords as written instead of masking them
   --keep-files   With unshare: end the links and public access, keep the files for your team
-  --yes          With unshare: do not ask first
+  --yes          With unshare: do not ask first. With --pr: allow posting
+                 the session link to a public repository
   --dry-run      Render everything, upload nothing
-  --json         Print one machine-readable result
+  --pr [number|url]  Attach to this PR, or the open PR for the current branch
+  --format <markdown|text|json>  Output format (default: text)
+  --json         Alias for --format json
   --api-url      Override the Spacefast API origin
   -h, --help     Show help
   -v, --version  Show version
@@ -907,5 +954,6 @@ Options
 Environment
   SPACEFAST_TOKEN      Publish as this credential instead of your sf login
   SPACEFAST_API_URL    Override the Spacefast API origin
+  GITHUB_TOKEN         GitHub API token when gh is not installed
   PUSH_SESSION_CONFIG  Override the config file path`);
 }

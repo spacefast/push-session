@@ -86,7 +86,48 @@ based, so it can miss a secret; `--no-redact` turns it off. A session picked
 from the list asks who can open it before it is published.
 
 Options: `--pick-space`, `--space <id>`, `--new-space`, `--team <slug>`,
-`--limit <n>`, `--public`, `--private`, `--no-redact`, `--dry-run`, `--json`, and `--api-url <url>`.
+`--limit <n>`, `--public`, `--private`, `--no-redact`, `--dry-run`,
+`--pr [number|url]`, `--yes`, `--format markdown|text|json`, `--json`, and
+`--api-url <url>`.
+
+## Share a session on a pull request
+
+Publish a session and attach its scoped, read-only link to an open GitHub PR:
+
+```bash
+npx push-session claude --pr              # pick a session; use the current branch's PR
+npx push-session claude <id> --pr 42      # choose a PR in this repository
+npx push-session claude <id> --pr https://github.com/owner/repo/pull/42
+npx push-session claude <id> --pr --yes   # also allow posting to a public repo
+```
+
+Run from the PR's git repository, or pass a full PR URL. An "Agent session"
+comment shows the title, agent, message count, and share link. Repeating the
+command for the same session updates the comment using its hidden
+`<!-- push-session:<sessionId> -->` marker. Different sessions get separate comments.
+
+GitHub access uses your `gh` CLI login when installed, otherwise `GITHUB_TOKEN`
+with permission to read the repository and write PR comments. The token fallback
+uses the `origin` repository for branch and numeric PR lookup; use a full PR URL
+for a PR in another repository, including an upstream fork target.
+This integration supports github.com.
+
+Before posting to a public repository, push-session asks for confirmation.
+Pass `--yes` to allow it without that prompt. Anyone who can read the PR can
+follow the link and read the session, so review its contents first.
+`--dry-run` neither publishes nor contacts GitHub.
+
+If GitHub access, lookup, or commenting fails, publishing still succeeds:
+push-session prints the markdown block with a warning so you can paste it yourself.
+To print markdown for any review tool, including GitLab and Gerrit, use:
+
+```bash
+npx push-session claude <id> --format markdown
+```
+
+`--format text` is the default. `--format json` (also `--json`) prints one JSON
+result, with PR details when requested and a `markdown` field if attachment fails.
+The warning goes to stderr. If output formats are repeated, the last one wins.
 
 ## Manage what you've shared
 

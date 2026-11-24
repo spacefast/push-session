@@ -1,16 +1,18 @@
-const VALUE_FLAGS = new Set(["--space", "--team", "--api-url", "--limit"]);
+const VALUE_FLAGS = new Set(["--space", "--team", "--api-url", "--limit", "--format", "--pr"]);
 const VISIBILITY_FLAGS = new Set(["--public", "--private"]);
 
 export function parseArgs(argv, env = process.env) {
   const options = {
     apiUrl: env.SPACEFAST_API_URL,
     dryRun: false,
+    format: "text",
     help: false,
     json: false,
     keepFiles: false,
     limit: 12,
     newSpace: false,
     pickSpace: false,
+    pr: false,
     redact: true,
     space: undefined,
     team: undefined,
@@ -32,13 +34,19 @@ export function parseArgs(argv, env = process.env) {
     }
     if (value === "-h" || value === "--help") options.help = true;
     else if (value === "-v" || value === "--version") options.version = true;
-    else if (value === "--json") options.json = true;
-    else if (value === "--dry-run") options.dryRun = true;
+    else if (value === "--json") assignValue(options, "--format", "json");
+    else if (value === "--yes") options.yes = true;
+    else if (value === "--pr") {
+      const next = argv[index + 1];
+      if (next && !next.startsWith("-")) {
+        assignValue(options, value, next);
+        index += 1;
+      } else options.pr = true;
+    } else if (value === "--dry-run") options.dryRun = true;
     else if (value === "--new-space") options.newSpace = true;
     else if (value === "--pick-space") options.pickSpace = true;
     else if (value === "--no-redact") options.redact = false;
     else if (value === "--keep-files") options.keepFiles = true;
-    else if (value === "--yes") options.yes = true;
     else if (VISIBILITY_FLAGS.has(value)) {
       if (options.visibility) throw new Error("--public and --private cannot be used together.");
       options.visibility = value.slice(2);
@@ -75,6 +83,17 @@ function assignValue(options, flag, value) {
   if (flag === "--space") options.space = value;
   if (flag === "--team") options.team = value;
   if (flag === "--api-url") options.apiUrl = value;
+  if (flag === "--format") {
+    if (!["markdown", "text", "json"].includes(value)) throw new Error("--format must be markdown, text, or json.");
+    options.format = value;
+    options.json = value === "json";
+  }
+  if (flag === "--pr") {
+    if (!/^[1-9]\d*$/.test(value) && !/^https:\/\/github\.com\/[\w.-]+\/[\w.-]+\/pull\/[1-9]\d*\/?$/.test(value)) {
+      throw new Error("--pr must be a pull request number or a https://github.com/owner/repo/pull/number URL.");
+    }
+    options.pr = value;
+  }
   if (flag === "--limit") {
     const limit = Number(value);
     if (!/^\d+$/.test(value) || !Number.isInteger(limit) || limit < 1 || limit > 500) {
