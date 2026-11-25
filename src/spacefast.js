@@ -318,6 +318,18 @@ async function grantAccess({ api, basePath, visibility, publicIndex, rootIndex, 
   return createScopedShareLink({ apiUrl: api.apiUrl, bearerToken: api.accessToken, fetchImpl: api.fetchImpl, spaceId: api.spaceId, basePath, title, shareName });
 }
 
+/**
+ * Changes who can open a session that is already published. As in a publish, what the new
+ * visibility does not allow ends first, `write` then saves the Space's session list, and what the
+ * visibility asks for opens last. Returns the session's share link when it is private.
+ */
+export async function changeVisibility({ apiUrl = DEFAULT_API_URL, accessToken, fetchImpl = globalThis.fetch, spaceId, basePath, visibility, publicIndex, rootIndex = true, title }, write) {
+  const api = { apiUrl: apiUrl.replace(/\/$/, ""), accessToken, fetchImpl, spaceId };
+  const access = await restrictAccess({ api, basePath, visibility, publicIndex, rootIndex, tolerant: false });
+  await write();
+  return grantAccess({ api, basePath, visibility, publicIndex, rootIndex, access, title });
+}
+
 function sessionResources(basePath) {
   return [`/${basePath}`, `/${basePath}/**`];
 }

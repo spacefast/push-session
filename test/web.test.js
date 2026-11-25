@@ -3,7 +3,7 @@ import http from "node:http";
 import test from "node:test";
 
 import { run } from "../src/cli.js";
-import { runWeb } from "../src/web.js";
+import { browserCommand, runWeb } from "../src/web.js";
 
 const adapter = {
   id: "codex",
@@ -93,4 +93,15 @@ test("the web command answers --help and --version itself, and refuses options a
   for (const flag of ["--dry-run", "--new-space", "--pick-space"]) {
     await assert.rejects(run(["web", "--no-open", flag], {}), /chosen in the page/);
   }
+});
+
+test("a web address is opened without a shell, and nothing else is opened at all", () => {
+  // On Windows `cmd` would run what follows an & in the address.
+  const address = "https://sessions.example/sessions/x&calc.exe&rem/";
+  assert.deepEqual(browserCommand(address, "win32"), ["rundll32", ["url.dll,FileProtocolHandler", address]]);
+  assert.deepEqual(browserCommand(address, "darwin"), ["open", [address]]);
+  assert.deepEqual(browserCommand("http://127.0.0.1:4173/?token=abc", "linux"), ["xdg-open", ["http://127.0.0.1:4173/?token=abc"]]);
+  // A space or a quote would make Node quote the argument; an address carries neither.
+  assert.deepEqual(browserCommand('https://sessions.example/a b"c/', "win32")[1][1], "https://sessions.example/a%20b%22c/");
+  for (const other of ["file:///etc/passwd", "calc.exe", "", "javascript:alert(1)"]) assert.equal(browserCommand(other, "win32"), null);
 });

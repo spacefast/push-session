@@ -136,12 +136,24 @@ function sameToken(given, token) {
   return left.length === right.length && timingSafeEqual(left, right);
 }
 
-function openBrowser(address) {
-  const [command, args] = process.platform === "darwin" ? ["open", [address]]
-    : process.platform === "win32" ? ["cmd", ["/c", "start", "", address]]
-      : ["xdg-open", [address]];
+/**
+ * The command that opens a web address, or null for anything that is not one. No shell runs it:
+ * part of a session's address comes from the Space's files, and `cmd` would read an `&` in it as
+ * the start of another command.
+ */
+export function browserCommand(address, platform = process.platform) {
+  const url = URL.canParse(address) ? new URL(address) : null;
+  if (!url || !["http:", "https:"].includes(url.protocol)) return null;
+  return platform === "darwin" ? ["open", [url.href]]
+    : platform === "win32" ? ["rundll32", ["url.dll,FileProtocolHandler", url.href]]
+      : ["xdg-open", [url.href]];
+}
+
+export function openBrowser(address) {
+  const launch = browserCommand(address);
+  if (!launch) return;
   try {
-    spawn(command, args, { stdio: "ignore", detached: true }).on("error", () => {}).unref();
+    spawn(launch[0], launch[1], { stdio: "ignore", detached: true }).on("error", () => {}).unref();
   } catch {
     // The address is printed either way.
   }
