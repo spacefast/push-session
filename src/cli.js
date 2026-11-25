@@ -271,7 +271,9 @@ async function publishOwned(context) {
   let target = null;
   let saveTarget = false;
   if (parsed.options.space) {
-    target = { id: parsed.options.space, title: null };
+    // The remembered Space named by its ID is still the remembered Space, title and all.
+    const saved = ownedSpaceFor(config, apiUrl);
+    target = saved?.id === parsed.options.space ? saved : { id: parsed.options.space, title: null };
   } else if (parsed.options.newSpace) {
     target = { id: null, title: OWNED_SPACE_TITLE };
     saveTarget = true;
@@ -638,7 +640,8 @@ async function manageSessions(parsed, dependencies) {
     const warnings = [];
     try {
       const output = await run(
-        [entry.agent, entry.sessionId, "--json", ...(signedOutSpace ? [] : [`--${session.visibility}`]), ...(options.space ? ["--space", options.space] : []), ...(options.apiUrl ? ["--api-url", options.apiUrl] : [])],
+        // The Space on screen is named, so a default that changed while the list was open is not published to.
+        [entry.agent, entry.sessionId, "--json", ...(signedOutSpace ? [] : [`--${session.visibility}`, "--space", space.id]), ...(options.apiUrl ? ["--api-url", options.apiUrl] : [])],
         { ...dependencies, interactive: false, log: () => {}, warn: (message) => warnings.push(message) },
       );
       change.done(`Updated "${flatTitle(output.title || session.title)}"`);
@@ -1027,7 +1030,7 @@ Options
   --public       Anyone can open the session, no link needed
   --no-redact    Publish keys, tokens and passwords as written instead of masking them
   --keep-files   With unshare: end the links and public access, keep the files for your team
-  --yes          With unshare: do not ask first
+  --yes          With delete or unshare: do not ask first
   --dry-run      Render everything, upload nothing
   --json         Print one machine-readable result
   --api-url      Override the Spacefast API origin

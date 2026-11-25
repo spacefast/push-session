@@ -41,7 +41,8 @@ test("the list shows every session with its address, and the keys the one under 
   assert.doesNotMatch(drawn(), /update: /);
   await press("d");
   assert.deepEqual(await picked, { action: "d", value: "sessions/two" });
-  assert.match(drawn(), /delete: Fix the router/);
+  // The list closes once: one line end after it, as after Enter, and no empty line.
+  assert.match(drawn(), /delete: Fix the router\n$/);
 });
 
 test("Enter does a session's Enter action, says so when it has none, and Escape leaves the list as it was", async () => {
@@ -49,7 +50,7 @@ test("Enter does a session's Enter action, says so when it has none, and Escape 
   const opened = list(opening);
   await opening.press("\r");
   assert.deepEqual(await opened, { action: "enter", value: "sessions/one" });
-  assert.match(opening.drawn(), /open: Draft the post/);
+  assert.match(opening.drawn(), /open: Draft the post\n$/);
 
   // The list opens on the session it is given.
   const { input, output, drawn, press } = terminal();

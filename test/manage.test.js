@@ -332,6 +332,32 @@ test("in a terminal, u publishes a session again from this machine, to the addre
   assert.match(space.logged[0], /^Could not update "Fix the importer, again": No Claude Code sessions here yet\./);
 });
 
+test("u publishes to the Space the list shows, even when the default has changed since", async (context) => {
+  const space = fakeSpace(context);
+  const remember = (id, title) => saveConfig({ version: 1, owned: { [API]: { id, title, liveUrl: `${LIVE}/` } } }, space.env);
+  remember("spc_one", "Team sessions");
+  const session = { agent: "claude", agentLabel: "Claude Code", id: "session-private", title: "Fix the importer" };
+  const claude = { id: "claude", label: "Claude Code", aliases: [], installed: () => true, discover: () => [session], load: () => [{ role: "assistant", content: "Done" }] };
+  const publishedTo = [];
+  const fetchImpl = (url, init = {}) => {
+    if (new URL(url).pathname === "/v1/publish") publishedTo.push(JSON.parse(init.body.get("payload")).spaceId);
+    return space.dependencies.fetchImpl(url, init);
+  };
+  const presses = [() => {}, () => {
+    // The remembered Space, named by its ID, kept its own title on the sessions page.
+    assert.match(space.files.get("index.html"), /<h1>Team sessions<\/h1>/);
+    remember("spc_other", "Another Space");
+  }];
+  const pickPublished = async () => {
+    const before = presses.shift();
+    before?.();
+    return before ? { action: "u", value: "sessions/aaaa-1111" } : null;
+  };
+  await run(["list"], { ...space.dependencies, fetchImpl, adapters: [claude], discoverSessionArtifacts: async () => [], interactive: true, pickPublished });
+
+  assert.deepEqual(publishedTo, ["spc_one", "spc_one"]);
+});
+
 test("the list offers a change of access only where it would do something", async (context) => {
   // In a Space that is itself public, a session cannot be made private from here.
   const space = fakeSpace(context);

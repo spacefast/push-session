@@ -51,12 +51,9 @@ export async function pickPublished({ title, options, initialValue, closed, inpu
     const chosen = options[prompt.cursor].actions.find((item) => item.key === pressed);
     if (!chosen) return;
     action = chosen;
-    // Enter ends the prompt by itself; a letter ends it the same way, with its action as the answer.
-    if (pressed === "enter") return;
-    prompt.state = "submit";
-    prompt.emit("finalize");
-    prompt.render();
-    prompt.close();
+    // Enter ends the prompt by itself. A letter only has to say it is the answer: the prompt closes
+    // on a submit once this listener returns.
+    if (pressed !== "enter") prompt.state = "submit";
   });
 
   const value = await prompt.prompt();
