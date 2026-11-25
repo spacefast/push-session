@@ -424,3 +424,17 @@ test("a key acts on the Space as it is when pressed, not as it was when the list
   await run(["list"], { ...space.dependencies, interactive: true, pickPublished: gone, prompts: scripted([]).prompts });
   assert.deepEqual(space.calls, []);
 });
+
+test("c does what the list said it would, or nothing: a session made private meanwhile is not made public", async (context) => {
+  const space = fakeSpace(context);
+  // The list shows the public session with "c: make private"; someone makes it private before the key.
+  const presses = [() => space.access.splice(space.access.findIndex((item) => item.id === "grt_public"), 1)];
+  const pickPublished = async () => {
+    const before = presses.shift();
+    before?.();
+    return before ? { action: "c", value: "sessions/bbbb-2222" } : null;
+  };
+  const result = await run(["list"], { ...space.dependencies, interactive: true, pickPublished });
+  assert.deepEqual(space.calls, [], "nothing is written");
+  assert.equal(result.sessions.find((session) => session.route === "sessions/bbbb-2222").visibility, "private");
+});

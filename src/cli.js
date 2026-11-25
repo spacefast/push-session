@@ -702,12 +702,15 @@ async function manageSessions(parsed, dependencies) {
         continue;
       }
       // The list may have been open for a while, so the Space is read again and the change is made
-      // to what it holds now: a session published meanwhile stays on the sessions page, and a key
-      // the session no longer takes does nothing.
+      // to what it holds now: a session published meanwhile stays on the sessions page. The key
+      // does what the list said it would or nothing, so a session made private meanwhile is not
+      // made public by the key that was going to make it private.
+      const offers = (item) => item && actionsFor(state, item).find((action) => action.key === choice.action)?.label;
+      const shown = offers(sessions.find((item) => item.route === route));
       state = await load();
       sessions = published(state);
       const session = sessions.find((item) => item.route === route);
-      if (!session || !actionsFor(state, session).some((item) => item.key === choice.action)) {
+      if (!shown || offers(session) !== shown) {
         if (sessions.length === 0) log(formatSessionList({ title, sessions }));
         continue;
       }
