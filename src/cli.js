@@ -697,9 +697,18 @@ async function manageSessions(parsed, dependencies) {
       });
       if (!choice) break;
       route = choice.value;
-      const session = sessions.find((item) => item.route === route);
       if (choice.action === "enter") {
-        (dependencies.openBrowser || openBrowser)(session.url);
+        (dependencies.openBrowser || openBrowser)(sessions.find((item) => item.route === route).url);
+        continue;
+      }
+      // The list may have been open for a while, so the Space is read again and the change is made
+      // to what it holds now: a session published meanwhile stays on the sessions page, and a key
+      // the session no longer takes does nothing.
+      state = await load();
+      sessions = published(state);
+      const session = sessions.find((item) => item.route === route);
+      if (!session || !actionsFor(state, session).some((item) => item.key === choice.action)) {
+        if (sessions.length === 0) log(formatSessionList({ title, sessions }));
         continue;
       }
       if (choice.action === "d") {

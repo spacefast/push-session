@@ -391,3 +391,36 @@ test("a change of access goes by what is open now, not by what the list last rec
   await run(["list"], keyed(space, [["c", "sessions/bbbb-2222"]]).dependencies);
   assert.ok(!space.access.some((item) => item.subject.audience === "public"), "its public access ends in whatever shape it was granted");
 });
+
+test("a key acts on the Space as it is when pressed, not as it was when the list opened", async (context) => {
+  const space = fakeSpace(context);
+  const index = () => JSON.parse(space.files.get("sessions/index.json")).sessions;
+  const write = (sessions) => space.files.set("sessions/index.json", JSON.stringify({ version: 1, sessions }));
+  // Someone publishes another session while the list is open.
+  const publishElsewhere = (id) => {
+    write([...index(), { path: `sessions/${id}`, sessionId: id, title: "Published meanwhile", agent: "codex", visibility: "private", updatedAt: "2026-11-23T10:00:00.000Z" }]);
+    space.files.set(`sessions/${id}/index.html`, "page");
+  };
+  const meanwhile = [
+    ["c", "sessions/aaaa-1111", () => publishElsewhere("cccc-3333")],
+    ["d", "sessions/bbbb-2222", () => publishElsewhere("dddd-4444")],
+  ];
+  const pickPublished = async () => {
+    const [action, value, before] = meanwhile.shift() || [];
+    before?.();
+    return action ? { action, value } : null;
+  };
+  await run(["list"], { ...space.dependencies, interactive: true, pickPublished, prompts: scripted([true]).prompts });
+  assert.deepEqual(space.listed(), [["sessions/cccc-3333", "private"], ["sessions/dddd-4444", "private"], ["sessions/aaaa-1111", "public"]], "the sessions published meanwhile are still listed");
+
+  // A session that was deleted elsewhere meanwhile is left alone: nothing is written for it.
+  space.calls.length = 0;
+  const gone = async () => {
+    if (space.calls.length > 0 || !space.files.has("sessions/aaaa-1111/index.html")) return null;
+    write(index().filter((entry) => entry.path !== "sessions/aaaa-1111"));
+    for (const file of [...space.files.keys()]) if (file.startsWith("sessions/aaaa-1111/")) space.files.delete(file);
+    return { action: "c", value: "sessions/aaaa-1111" };
+  };
+  await run(["list"], { ...space.dependencies, interactive: true, pickPublished: gone, prompts: scripted([]).prompts });
+  assert.deepEqual(space.calls, []);
+});
